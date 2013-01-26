@@ -21,11 +21,11 @@
  * RFC1734 POP3 Authentication
  * RFC1939 POP3 protocol
  * RFC2195 CRAM-MD5 authentication
- * RFC2222 Simple Authentication and Security Layer (SASL)
  * RFC2384 POP URL Scheme
  * RFC2449 POP3 Extension Mechanism
  * RFC2595 Using TLS with IMAP, POP3 and ACAP
  * RFC2831 DIGEST-MD5 authentication
+ * RFC4422 Simple Authentication and Security Layer (SASL)
  * RFC4616 PLAIN authentication
  *
  ***************************************************************************/
@@ -568,10 +568,8 @@ static CURLcode pop3_state_starttls_resp(struct connectdata *conn,
     else
       result = pop3_state_capa(conn);
   }
-  else {
-    state(conn, POP3_UPGRADETLS);
+  else
     result = pop3_state_upgrade_tls(conn);
-  }
 
   return result;
 }
@@ -583,9 +581,14 @@ static CURLcode pop3_state_upgrade_tls(struct connectdata *conn)
 
   result = Curl_ssl_connect_nonblocking(conn, FIRSTSOCKET, &pop3c->ssldone);
 
-  if(pop3c->ssldone) {
-    pop3_to_pop3s(conn);
-    result = pop3_state_capa(conn);
+  if(!result) {
+    if(pop3c->state != POP3_UPGRADETLS)
+      state(conn, POP3_UPGRADETLS);
+
+    if(pop3c->ssldone) {
+      pop3_to_pop3s(conn);
+      result = pop3_state_capa(conn);
+    }
   }
 
   return result;
@@ -1608,8 +1611,6 @@ static CURLcode pop3_regular_transfer(struct connectdata *conn,
       return CURLE_OK;
 
     result = pop3_dophase_done(conn, connected);
-    if(result)
-      return result;
   }
 
   return result;
