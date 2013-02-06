@@ -55,13 +55,14 @@ typedef enum {
    struct */
 struct imap_conn {
   struct pingpong pp;
-  char *mailbox;          /* Message ID to fetch */
+  char *mailbox;          /* Mailbox to select */
   unsigned int authmechs; /* Accepted authentication mechanisms */
   unsigned int authused;  /* Auth mechanism used for the connection */
   imapstate state;        /* Always use imap.c:state() to change state! */
   int cmdid;              /* Next command ID */
   const char *idstr;      /* String based response ID to wait for */
   bool ssldone;           /* Is connect() over SSL done? */
+  bool login_disabled;    /* LOGIN command explicitly disabled by server */
 };
 
 extern const struct Curl_handler Curl_handler_imap;

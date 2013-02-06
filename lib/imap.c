@@ -323,8 +323,8 @@ static char* imap_atom(const char* str)
 }
 
 /* Function that checks for an ending imap status code at the start of the
-   given string but also detects the supported mechanisms from the CAPABILITY
-   response. */
+   given string but also detects the supported authentication mechanisms from
+   the CAPABILITY response. */
 static int imap_endofresp(struct pingpong *pp, int *resp)
 {
   char *line = pp->linestart_resp;
@@ -378,8 +378,12 @@ static int imap_endofresp(struct pingpong *pp, int *resp)
               line[wordlen] != '\n';)
           wordlen++;
 
-        /* Do we have an AUTH capability? */
-        if(wordlen > 5 && !memcmp(line, "AUTH=", 5)) {
+        /* Has the server explicitly disabled clear text authentication? */
+        if(wordlen == 13 && !memcmp(line, "LOGINDISABLED", 13))
+          imapc->login_disabled = TRUE;
+
+        /* Do we have a SASL based authentication mechanism? */
+        else if(wordlen > 5 && !memcmp(line, "AUTH=", 5)) {
           line += 5;
           len -= 5;
           wordlen -= 5;
@@ -515,7 +519,7 @@ static CURLcode imap_authenticate(struct connectdata *conn)
   const char *mech = NULL;
   imapstate authstate = IMAP_STOP;
 
-  /* Check supported authentication mechanisms by decreasing order of
+  /* Calculate the supported authentication mechanism by decreasing order of
      security */
 #ifndef CURL_DISABLE_CRYPTO_AUTH
   if(imapc->authmechs & SASL_MECH_DIGEST_MD5) {
@@ -548,18 +552,23 @@ static CURLcode imap_authenticate(struct connectdata *conn)
     authstate = IMAP_AUTHENTICATE_PLAIN;
     imapc->authused = SASL_MECH_PLAIN;
   }
-  else {
-    infof(conn->data, "No known authentication mechanisms supported!\n");
-    result = CURLE_LOGIN_DENIED; /* Other mechanisms not supported */
-  }
 
-  if(!result) {
+  if(mech) {
+    /* Perform SASL based authentication */
     const char *str = getcmdid(conn);
 
     result = imap_sendf(conn, str, "%s AUTHENTICATE %s", str, mech);
 
     if(!result)
       state(conn, authstate);
+  }
+  else if(!imapc->login_disabled)
+    /* Perform clear text authentication */
+    result = imap_state_login(conn);
+  else {
+    /* Other mechanisms not supported */
+    infof(conn->data, "No known authentication mechanisms supported!\n");
+    result = CURLE_LOGIN_DENIED;
   }
 
   return result;
@@ -660,11 +669,10 @@ static CURLcode imap_state_capability_resp(struct connectdata *conn,
                                            imapstate instate)
 {
   CURLcode result = CURLE_OK;
-  struct imap_conn *imapc = &conn->proto.imapc;
 
   (void)instate; /* no use for this yet */
 
-  if(imapcode == 'O' && imapc->authmechs)
+  if(imapcode == 'O')
     result = imap_authenticate(conn);
   else
     result = imap_state_login(conn);

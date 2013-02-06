@@ -934,7 +934,6 @@ singleipconnect(struct connectdata *conn,
       error = SOCKERRNO;
   }
   else {
-    rc = 0;
     *sockp = sockfd;
     return CURLE_OK;
   }
@@ -971,6 +970,8 @@ singleipconnect(struct connectdata *conn,
       break;
     }
   }
+  else
+    *sockp = sockfd;
 
   return CURLE_OK;
 }
