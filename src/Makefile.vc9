@@ -52,7 +52,7 @@ PROGRAM_NAME = curl.exe
 # Makefile.msvc.names provides libcurl file names
 # ------------------------------------------------
 
-!INCLUDE ..\Makefile.msvc.names
+!INCLUDE ..\winbuild\Makefile.msvc.names
 
 
 
