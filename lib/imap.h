@@ -59,10 +59,11 @@ struct imap_conn {
   unsigned int authmechs; /* Accepted authentication mechanisms */
   unsigned int authused;  /* Auth mechanism used for the connection */
   imapstate state;        /* Always use imap.c:state() to change state! */
-  int cmdid;              /* Next command ID */
-  const char *idstr;      /* String based response ID to wait for */
+  int cmdid;              /* Last used command ID */
+  char resptag[5];        /* Response tag to wait for */
   bool ssldone;           /* Is connect() over SSL done? */
   bool login_disabled;    /* LOGIN command explicitly disabled by server */
+  bool ir_supported;      /* Initial response supported by server */
 };
 
 extern const struct Curl_handler Curl_handler_imap;

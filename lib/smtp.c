@@ -204,78 +204,80 @@ static const struct Curl_handler Curl_handler_smtps_proxy = {
 #endif
 #endif
 
-/* Function that checks for an ending smtp status code at the start of the
-   given string, but also detects the supported authentication mechanisms
-   from  the EHLO AUTH response. */
+/* Function that checks for an ending SMTP status code at the start of the
+   given string, but also detects various capabilities from the EHLO response
+   including the supported authentication mechanisms. */
 static int smtp_endofresp(struct pingpong *pp, int *resp)
 {
   char *line = pp->linestart_resp;
   size_t len = pp->nread_resp;
   struct connectdata *conn = pp->conn;
   struct smtp_conn *smtpc = &conn->proto.smtpc;
-  int result;
   size_t wordlen;
 
   if(len < 4 || !ISDIGIT(line[0]) || !ISDIGIT(line[1]) || !ISDIGIT(line[2]))
     return FALSE;       /* Nothing for us */
 
-  /* Extract the response code if necessary */
-  if((result = (line[3] == ' ')) != 0)
+  /* Do we have a command response? */
+  if(line[3] == ' ') {
     *resp = curlx_sltosi(strtol(line, NULL, 10));
-
-  line += 4;
-  len -= 4;
-
-  /* Does the server support the SIZE capability? */
-  if(smtpc->state == SMTP_EHLO && len >= 4 && !memcmp(line, "SIZE", 4)) {
-    DEBUGF(infof(conn->data, "Server supports SIZE extension.\n"));
-    smtpc->size_supported = true;
+    return TRUE;
   }
 
-  /* Do we have the authentication mechanism list? */
-  if(smtpc->state == SMTP_EHLO && len >= 5 && !memcmp(line, "AUTH ", 5)) {
-    line += 5;
-    len -= 5;
+  /* Are we processing EHLO command data? */
+  if(smtpc->state == SMTP_EHLO) {
+    line += 4;
+    len -= 4;
 
-    for(;;) {
-      while(len &&
-            (*line == ' ' || *line == '\t' ||
-             *line == '\r' || *line == '\n')) {
-        line++;
-        len--;
+    /* Does the server support the SIZE capability? */
+    if(len >= 4 && !memcmp(line, "SIZE", 4))
+      smtpc->size_supported = TRUE;
+
+    /* Do we have the authentication mechanism list? */
+    else if(len >= 5 && !memcmp(line, "AUTH ", 5)) {
+      line += 5;
+      len -= 5;
+
+      for(;;) {
+        while(len &&
+              (*line == ' ' || *line == '\t' ||
+               *line == '\r' || *line == '\n')) {
+          line++;
+          len--;
+        }
+
+        if(!len)
+          break;
+
+        /* Extract the word */
+        for(wordlen = 0; wordlen < len && line[wordlen] != ' ' &&
+              line[wordlen] != '\t' && line[wordlen] != '\r' &&
+              line[wordlen] != '\n';)
+          wordlen++;
+
+        /* Test the word for a matching authentication mechanism */
+        if(wordlen == 5 && !memcmp(line, "LOGIN", 5))
+          smtpc->authmechs |= SASL_MECH_LOGIN;
+        else if(wordlen == 5 && !memcmp(line, "PLAIN", 5))
+          smtpc->authmechs |= SASL_MECH_PLAIN;
+        else if(wordlen == 8 && !memcmp(line, "CRAM-MD5", 8))
+          smtpc->authmechs |= SASL_MECH_CRAM_MD5;
+        else if(wordlen == 10 && !memcmp(line, "DIGEST-MD5", 10))
+          smtpc->authmechs |= SASL_MECH_DIGEST_MD5;
+        else if(wordlen == 6 && !memcmp(line, "GSSAPI", 6))
+          smtpc->authmechs |= SASL_MECH_GSSAPI;
+        else if(wordlen == 8 && !memcmp(line, "EXTERNAL", 8))
+          smtpc->authmechs |= SASL_MECH_EXTERNAL;
+        else if(wordlen == 4 && !memcmp(line, "NTLM", 4))
+          smtpc->authmechs |= SASL_MECH_NTLM;
+
+        line += wordlen;
+        len -= wordlen;
       }
-
-      if(!len)
-        break;
-
-      /* Extract the word */
-      for(wordlen = 0; wordlen < len && line[wordlen] != ' ' &&
-            line[wordlen] != '\t' && line[wordlen] != '\r' &&
-            line[wordlen] != '\n';)
-        wordlen++;
-
-      /* Test the word for a matching authentication mechanism */
-      if(wordlen == 5 && !memcmp(line, "LOGIN", 5))
-        smtpc->authmechs |= SASL_MECH_LOGIN;
-      else if(wordlen == 5 && !memcmp(line, "PLAIN", 5))
-        smtpc->authmechs |= SASL_MECH_PLAIN;
-      else if(wordlen == 8 && !memcmp(line, "CRAM-MD5", 8))
-        smtpc->authmechs |= SASL_MECH_CRAM_MD5;
-      else if(wordlen == 10 && !memcmp(line, "DIGEST-MD5", 10))
-        smtpc->authmechs |= SASL_MECH_DIGEST_MD5;
-      else if(wordlen == 6 && !memcmp(line, "GSSAPI", 6))
-        smtpc->authmechs |= SASL_MECH_GSSAPI;
-      else if(wordlen == 8 && !memcmp(line, "EXTERNAL", 8))
-        smtpc->authmechs |= SASL_MECH_EXTERNAL;
-      else if(wordlen == 4 && !memcmp(line, "NTLM", 4))
-        smtpc->authmechs |= SASL_MECH_NTLM;
-
-      line += wordlen;
-      len -= wordlen;
     }
   }
 
-  return result;
+  return FALSE;
 }
 
 /* This is the ONLY way to change SMTP state! */
@@ -293,7 +295,7 @@ static void state(struct connectdata *conn, smtpstate newstate)
     "UPGRADETLS",
     "AUTH_PLAIN",
     "AUTH_LOGIN",
-    "AUTH_PASSWD",
+    "AUTH_LOGIN_PASSWD",
     "AUTH_CRAMMD5",
     "AUTH_DIGESTMD5",
     "AUTH_DIGESTMD5_RESP",
@@ -355,6 +357,19 @@ static CURLcode smtp_state_helo(struct connectdata *conn)
   return CURLE_OK;
 }
 
+static CURLcode smtp_state_starttls(struct connectdata *conn)
+{
+  CURLcode result = CURLE_OK;
+
+  /* Send the STARTTLS command */
+  result = Curl_pp_sendf(&conn->proto.smtpc.pp, "STARTTLS");
+
+  if(!result)
+    state(conn, SMTP_STARTTLS);
+
+  return result;
+}
+
 static CURLcode smtp_authenticate(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
@@ -403,7 +418,7 @@ static CURLcode smtp_authenticate(struct connectdata *conn)
   if(smtpc->authmechs & SASL_MECH_LOGIN) {
     mech = "LOGIN";
     state1 = SMTP_AUTH_LOGIN;
-    state2 = SMTP_AUTH_PASSWD;
+    state2 = SMTP_AUTH_LOGIN_PASSWD;
     smtpc->authused = SASL_MECH_LOGIN;
     result = Curl_sasl_create_login_message(conn->data, conn->user,
                                             &initresp, &len);
@@ -545,9 +560,7 @@ static CURLcode smtp_state_ehlo_resp(struct connectdata *conn, int smtpcode,
   else if(data->set.use_ssl && !conn->ssl[FIRSTSOCKET].use) {
     /* We don't have a SSL/TLS connection yet, but SSL is requested. Switch
        to TLS connection now */
-    result = Curl_pp_sendf(&conn->proto.smtpc.pp, "STARTTLS");
-    if(!result)
-      state(conn, SMTP_STARTTLS);
+    result = smtp_state_starttls(conn);
   }
   else
     result = smtp_authenticate(conn);
@@ -639,7 +652,7 @@ static CURLcode smtp_state_auth_login_resp(struct connectdata *conn,
         result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", authuser);
 
         if(!result)
-          state(conn, SMTP_AUTH_PASSWD);
+          state(conn, SMTP_AUTH_LOGIN_PASSWD);
       }
 
       Curl_safefree(authuser);
@@ -649,10 +662,10 @@ static CURLcode smtp_state_auth_login_resp(struct connectdata *conn,
   return result;
 }
 
-/* For responses to user entry of AUTH LOGIN */
-static CURLcode smtp_state_auth_passwd_resp(struct connectdata *conn,
-                                            int smtpcode,
-                                            smtpstate instate)
+/* For AUTH LOGIN user entry responses */
+static CURLcode smtp_state_auth_login_password_resp(struct connectdata *conn,
+                                                    int smtpcode,
+                                                    smtpstate instate)
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
@@ -1162,8 +1175,9 @@ static CURLcode smtp_statemach_act(struct connectdata *conn)
       result = smtp_state_auth_login_resp(conn, smtpcode, smtpc->state);
       break;
 
-    case SMTP_AUTH_PASSWD:
-      result = smtp_state_auth_passwd_resp(conn, smtpcode, smtpc->state);
+    case SMTP_AUTH_LOGIN_PASSWD:
+      result = smtp_state_auth_login_password_resp(conn, smtpcode,
+                                                   smtpc->state);
       break;
 
 #ifndef CURL_DISABLE_CRYPTO_AUTH

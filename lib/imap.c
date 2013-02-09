@@ -24,6 +24,7 @@
  * RFC3501 IMAPv4 protocol
  * RFC4422 Simple Authentication and Security Layer (SASL)
  * RFC4616 PLAIN authentication
+ * RFC4959 IMAP Extension for SASL Initial Client Response
  * RFC5092 IMAP URL Scheme
  *
  ***************************************************************************/
@@ -211,39 +212,31 @@ static const struct Curl_handler Curl_handler_imaps_proxy = {
  *
  * Designed to never block.
  */
-static CURLcode imap_sendf(struct connectdata *conn,
-                           const char *idstr, /* command id to wait for */
-                           const char *fmt, ...)
+static CURLcode imap_sendf(struct connectdata *conn, const char *fmt, ...)
 {
-  CURLcode res;
+  CURLcode result;
   struct imap_conn *imapc = &conn->proto.imapc;
+  char *taggedfmt;
   va_list ap;
   va_start(ap, fmt);
 
-  imapc->idstr = idstr;
+  /* Calculate the next command ID wrapping at 3 digits */
+  imapc->cmdid = (imapc->cmdid + 1) % 1000;
 
-  res = Curl_pp_vsendf(&imapc->pp, fmt, ap);
+  /* Calculate the tag based on the connection ID and command ID */
+  snprintf(imapc->resptag, sizeof(imapc->resptag), "%c%03d",
+           'A' + (conn->connection_id % 26), imapc->cmdid);
 
+  taggedfmt = aprintf("%s %s", imapc->resptag, fmt);
+  if(!taggedfmt)
+    return CURLE_OUT_OF_MEMORY;
+
+  result = Curl_pp_vsendf(&imapc->pp, taggedfmt, ap);
+
+  Curl_safefree(taggedfmt);
   va_end(ap);
 
-  return res;
-}
-
-static const char *getcmdid(struct connectdata *conn)
-{
-  static const char * const ids[]= {
-    "A",
-    "B",
-    "C",
-    "D"
-  };
-
-  struct imap_conn *imapc = &conn->proto.imapc;
-
-  /* Get the next id, but wrap at end of table */
-  imapc->cmdid = (int)((imapc->cmdid + 1) % (sizeof(ids) / sizeof(ids[0])));
-
-  return ids[imapc->cmdid];
+  return result;
 }
 
 /***********************************************************************
@@ -322,19 +315,19 @@ static char* imap_atom(const char* str)
   return newstr;
 }
 
-/* Function that checks for an ending imap status code at the start of the
-   given string but also detects the supported authentication mechanisms from
-   the CAPABILITY response. */
+/* Function that checks for an ending IMAP status code at the start of the
+   given string but also detects various capabilities from the CAPABILITY
+   response including the supported authentication mechanisms. */
 static int imap_endofresp(struct pingpong *pp, int *resp)
 {
   char *line = pp->linestart_resp;
   size_t len = pp->nread_resp;
   struct imap_conn *imapc = &pp->conn->proto.imapc;
-  const char *id = imapc->idstr;
+  const char *id = imapc->resptag;
   size_t id_len = strlen(id);
   size_t wordlen;
 
-  /* Do we have a generic command response? */
+  /* Do we have a command response? */
   if(len >= id_len + 3) {
     if(!memcmp(id, line, id_len) && line[id_len] == ' ') {
       *resp = line[id_len + 1]; /* O, N or B */
@@ -342,14 +335,14 @@ static int imap_endofresp(struct pingpong *pp, int *resp)
     }
   }
 
-  /* Do we have a generic continuation response? */
+  /* Do we have a continuation response? */
   if((len == 3 && !memcmp("+", line, 1)) ||
      (len >= 2 && !memcmp("+ ", line, 2))) {
     *resp = '+';
     return TRUE;
   }
 
-  /* Are we processing CAPABILITY command responses? */
+  /* Are we processing CAPABILITY command data? */
   if(imapc->state == IMAP_CAPABILITY) {
     /* Do we have a valid response? */
     if(len >= 2 && !memcmp("* ", line, 2)) {
@@ -381,6 +374,10 @@ static int imap_endofresp(struct pingpong *pp, int *resp)
         /* Has the server explicitly disabled clear text authentication? */
         if(wordlen == 13 && !memcmp(line, "LOGINDISABLED", 13))
           imapc->login_disabled = TRUE;
+
+        /* Does the server support the SASL-IR capability? */
+        else if(wordlen == 7 && !memcmp(line, "SASL-IR", 7))
+          imapc->ir_supported = TRUE;
 
         /* Do we have a SASL based authentication mechanism? */
         else if(wordlen > 5 && !memcmp(line, "AUTH=", 5)) {
@@ -459,11 +456,23 @@ static void state(struct connectdata *conn, imapstate newstate)
   imapc->state = newstate;
 }
 
+static CURLcode imap_state_starttls(struct connectdata *conn)
+{
+  CURLcode result = CURLE_OK;
+
+  /* Send the STARTTLS command */
+  result = imap_sendf(conn, "STARTTLS");
+
+  if(!result)
+    state(conn, IMAP_STARTTLS);
+
+  return result;
+}
+
 static CURLcode imap_state_capability(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
   struct imap_conn *imapc = &conn->proto.imapc;
-  const char *str;
 
   imapc->authmechs = 0;         /* No known authentication mechanisms yet */
   imapc->authused = 0;          /* Clear the authentication mechanism used */
@@ -476,10 +485,8 @@ static CURLcode imap_state_capability(struct connectdata *conn)
     return result;
   }
 
-  str = getcmdid(conn);
-
   /* Send the CAPABILITY command */
-  result = imap_sendf(conn, str, "%s CAPABILITY", str);
+  result = imap_sendf(conn, "CAPABILITY");
 
   if(result)
     return result;
@@ -493,13 +500,12 @@ static CURLcode imap_state_login(struct connectdata *conn)
 {
   CURLcode result;
   struct FTP *imap = conn->data->state.proto.imap;
-  const char *str = getcmdid(conn);
   char *user = imap_atom(imap->user);
   char *passwd = imap_atom(imap->passwd);
 
-  /* send USER and password */
-  result = imap_sendf(conn, str, "%s LOGIN %s %s", str,
-                      user ? user : "", passwd ? passwd : "");
+  /* Send USER and password */
+  result = imap_sendf(conn, "LOGIN %s %s", user ? user : "",
+                      passwd ? passwd : "");
 
   Curl_safefree(user);
   Curl_safefree(passwd);
@@ -517,19 +523,22 @@ static CURLcode imap_authenticate(struct connectdata *conn)
   CURLcode result = CURLE_OK;
   struct imap_conn *imapc = &conn->proto.imapc;
   const char *mech = NULL;
-  imapstate authstate = IMAP_STOP;
+  char *initresp = NULL;
+  size_t len = 0;
+  imapstate state1 = IMAP_STOP;
+  imapstate state2 = IMAP_STOP;
 
   /* Calculate the supported authentication mechanism by decreasing order of
      security */
 #ifndef CURL_DISABLE_CRYPTO_AUTH
   if(imapc->authmechs & SASL_MECH_DIGEST_MD5) {
     mech = "DIGEST-MD5";
-    authstate = IMAP_AUTHENTICATE_DIGESTMD5;
+    state1 = IMAP_AUTHENTICATE_DIGESTMD5;
     imapc->authused = SASL_MECH_DIGEST_MD5;
   }
   else if(imapc->authmechs & SASL_MECH_CRAM_MD5) {
     mech = "CRAM-MD5";
-    authstate = IMAP_AUTHENTICATE_CRAMMD5;
+    state1 = IMAP_AUTHENTICATE_CRAMMD5;
     imapc->authused = SASL_MECH_CRAM_MD5;
   }
   else
@@ -537,30 +546,56 @@ static CURLcode imap_authenticate(struct connectdata *conn)
 #ifdef USE_NTLM
   if(imapc->authmechs & SASL_MECH_NTLM) {
     mech = "NTLM";
-    authstate = IMAP_AUTHENTICATE_NTLM;
+    state1 = IMAP_AUTHENTICATE_NTLM;
+    state2 = IMAP_AUTHENTICATE_NTLM_TYPE2MSG;
     imapc->authused = SASL_MECH_NTLM;
+
+    if(imapc->ir_supported)
+      result = Curl_sasl_create_login_message(conn->data, conn->user,
+                                              &initresp, &len);
   }
   else
 #endif
   if(imapc->authmechs & SASL_MECH_LOGIN) {
     mech = "LOGIN";
-    authstate = IMAP_AUTHENTICATE_LOGIN;
+    state1 = IMAP_AUTHENTICATE_LOGIN;
+    state2 = IMAP_AUTHENTICATE_LOGIN_PASSWD;
     imapc->authused = SASL_MECH_LOGIN;
+
+    if(imapc->ir_supported)
+      result = Curl_sasl_create_plain_message(conn->data, conn->user,
+                                              conn->passwd, &initresp, &len);
   }
   else if(imapc->authmechs & SASL_MECH_PLAIN) {
     mech = "PLAIN";
-    authstate = IMAP_AUTHENTICATE_PLAIN;
+    state1 = IMAP_AUTHENTICATE_PLAIN;
+    state2 = IMAP_AUTHENTICATE;
     imapc->authused = SASL_MECH_PLAIN;
+
+    if(imapc->ir_supported)
+      result = Curl_sasl_create_plain_message(conn->data, conn->user,
+                                              conn->passwd, &initresp, &len);
   }
 
+  if(result)
+    return result;
+
   if(mech) {
-    /* Perform SASL based authentication */
-    const char *str = getcmdid(conn);
+    if(initresp) {
+      /* Perform SASL based authentication */
+      result = imap_sendf(conn, "AUTHENTICATE %s %s", mech, initresp);
 
-    result = imap_sendf(conn, str, "%s AUTHENTICATE %s", str, mech);
+      if(!result)
+        state(conn, state2);
+    }
+    else {
+      result = imap_sendf(conn, "AUTHENTICATE %s", mech);
 
-    if(!result)
-      state(conn, authstate);
+      if(!result)
+        state(conn, state1);
+    }
+
+    Curl_safefree(initresp);
   }
   else if(!imapc->login_disabled)
     /* Perform clear text authentication */
@@ -608,10 +643,7 @@ static CURLcode imap_state_servergreet_resp(struct connectdata *conn,
   if(data->set.use_ssl && !conn->ssl[FIRSTSOCKET].use) {
     /* We don't have a SSL/TLS connection yet, but SSL is requested. Switch
        to TLS connection now */
-    const char *str = getcmdid(conn);
-    result = imap_sendf(conn, str, "%s STARTTLS", str);
-    if(!result)
-      state(conn, IMAP_STARTTLS);
+    result = imap_state_starttls(conn);
   }
   else
     result = imap_state_capability(conn);
@@ -680,7 +712,7 @@ static CURLcode imap_state_capability_resp(struct connectdata *conn,
   return result;
 }
 
-/* For AUTHENTICATE PLAIN responses */
+/* For AUTHENTICATE PLAIN (without initial response) responses */
 static CURLcode imap_state_auth_plain_resp(struct connectdata *conn,
                                            int imapcode,
                                            imapstate instate)
@@ -717,7 +749,7 @@ static CURLcode imap_state_auth_plain_resp(struct connectdata *conn,
   return result;
 }
 
-/* For AUTHENTICATE LOGIN responses */
+/* For AUTHENTICATE LOGIN (without initial response) responses */
 static CURLcode imap_state_auth_login_resp(struct connectdata *conn,
                                            int imapcode,
                                            imapstate instate)
@@ -914,7 +946,7 @@ static CURLcode imap_state_auth_digest_resp_resp(struct connectdata *conn,
 #endif
 
 #ifdef USE_NTLM
-/* For AUTHENTICATE NTLM responses */
+/* For AUTHENTICATE NTLM (without initial response) responses */
 static CURLcode imap_state_auth_ntlm_resp(struct connectdata *conn,
                                           int imapcode,
                                           imapstate instate)
@@ -1040,10 +1072,9 @@ static CURLcode imap_select(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
   struct imap_conn *imapc = &conn->proto.imapc;
-  const char *str = getcmdid(conn);
 
-  result = imap_sendf(conn, str, "%s SELECT %s", str,
-                      imapc->mailbox?imapc->mailbox:"");
+  result = imap_sendf(conn, "SELECT %s",
+                      imapc->mailbox ? imapc->mailbox : "");
   if(result)
     return result;
 
@@ -1055,12 +1086,11 @@ static CURLcode imap_select(struct connectdata *conn)
 static CURLcode imap_fetch(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
-  const char *str = getcmdid(conn);
 
   /* TODO: make this select the correct mail
    * Use "1 body[text]" to get the full mail body of mail 1
    */
-  result = imap_sendf(conn, str, "%s FETCH 1 BODY[TEXT]", str);
+  result = imap_sendf(conn, "FETCH 1 BODY[TEXT]");
   if(result)
     return result;
 
@@ -1378,8 +1408,8 @@ static CURLcode imap_connect(struct connectdata *conn, bool *done)
   /* Start off waiting for the server greeting response */
   state(conn, IMAP_SERVERGREET);
 
-  /* Start off with an id of '*' */
-  imapc->idstr = "*";
+  /* Start off with an response id of '*' */
+  strcpy(imapc->resptag, "*");
 
   result = imap_multi_statemach(conn, done);
 
@@ -1510,9 +1540,8 @@ static CURLcode imap_do(struct connectdata *conn, bool *done)
 static CURLcode imap_logout(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
-  const char *str = getcmdid(conn);
 
-  result = imap_sendf(conn, str, "%s LOGOUT", str, NULL);
+  result = imap_sendf(conn, "LOGOUT", NULL);
   if(result)
     return result;
 
