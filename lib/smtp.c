@@ -210,22 +210,21 @@ static const struct Curl_handler Curl_handler_smtps_proxy = {
 static int smtp_endofresp(struct pingpong *pp, int *resp)
 {
   char *line = pp->linestart_resp;
-  size_t len = pp->nread_resp;
+  size_t len = strlen(pp->linestart_resp);
   struct connectdata *conn = pp->conn;
   struct smtp_conn *smtpc = &conn->proto.smtpc;
+  int result = FALSE;
   size_t wordlen;
 
   if(len < 4 || !ISDIGIT(line[0]) || !ISDIGIT(line[1]) || !ISDIGIT(line[2]))
     return FALSE;       /* Nothing for us */
 
   /* Do we have a command response? */
-  if(line[3] == ' ') {
+  if((result = (line[3] == ' ')) != 0)
     *resp = curlx_sltosi(strtol(line, NULL, 10));
-    return TRUE;
-  }
 
   /* Are we processing EHLO command data? */
-  if(smtpc->state == SMTP_EHLO) {
+  if(smtpc->state == SMTP_EHLO && (!result || (result && *resp/100 == 2))) {
     line += 4;
     len -= 4;
 
@@ -242,6 +241,10 @@ static int smtp_endofresp(struct pingpong *pp, int *resp)
         while(len &&
               (*line == ' ' || *line == '\t' ||
                *line == '\r' || *line == '\n')) {
+
+          if(*line == '\n')
+            return FALSE;
+
           line++;
           len--;
         }
@@ -277,7 +280,7 @@ static int smtp_endofresp(struct pingpong *pp, int *resp)
     }
   }
 
-  return FALSE;
+  return result;
 }
 
 /* This is the ONLY way to change SMTP state! */
