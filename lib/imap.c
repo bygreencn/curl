@@ -204,6 +204,15 @@ static const struct Curl_handler Curl_handler_imaps_proxy = {
 #endif
 #endif
 
+#ifdef USE_SSL
+static void imap_to_imaps(struct connectdata *conn)
+{
+  conn->handler = &Curl_handler_imaps;
+}
+#else
+#define imap_to_imaps(x) Curl_nop_stmt
+#endif
+
 /***********************************************************************
  *
  * imap_sendf()
@@ -371,8 +380,12 @@ static int imap_endofresp(struct pingpong *pp, int *resp)
               line[wordlen] != '\n';)
           wordlen++;
 
+        /* Does the server support the STARTTLS capability? */
+        if(len >= 8 && !memcmp(line, "STARTTLS", 8))
+          imapc->tls_supported = TRUE;
+
         /* Has the server explicitly disabled clear text authentication? */
-        if(wordlen == 13 && !memcmp(line, "LOGINDISABLED", 13))
+        else if(wordlen == 13 && !memcmp(line, "LOGINDISABLED", 13))
           imapc->login_disabled = TRUE;
 
         /* Does the server support the SASL-IR capability? */
@@ -429,9 +442,9 @@ static void state(struct connectdata *conn, imapstate newstate)
   static const char * const names[]={
     "STOP",
     "SERVERGREET",
+    "CAPABILITY",
     "STARTTLS",
     "UPGRADETLS",
-    "CAPABILITY",
     "AUTHENTICATE_PLAIN",
     "AUTHENTICATE_LOGIN",
     "AUTHENTICATE_LOGIN_PASSWD",
@@ -456,6 +469,26 @@ static void state(struct connectdata *conn, imapstate newstate)
   imapc->state = newstate;
 }
 
+static CURLcode imap_state_capability(struct connectdata *conn)
+{
+  CURLcode result = CURLE_OK;
+  struct imap_conn *imapc = &conn->proto.imapc;
+
+  imapc->authmechs = 0;         /* No known authentication mechanisms yet */
+  imapc->authused = 0;          /* Clear the authentication mechanism used */
+  imapc->tls_supported = FALSE; /* Clear the TLS capability */
+
+  /* Send the CAPABILITY command */
+  result = imap_sendf(conn, "CAPABILITY");
+
+  if(result)
+    return result;
+
+  state(conn, IMAP_CAPABILITY);
+
+  return CURLE_OK;
+}
+
 static CURLcode imap_state_starttls(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
@@ -469,13 +502,32 @@ static CURLcode imap_state_starttls(struct connectdata *conn)
   return result;
 }
 
-static CURLcode imap_state_capability(struct connectdata *conn)
+static CURLcode imap_state_upgrade_tls(struct connectdata *conn)
+{
+  struct imap_conn *imapc = &conn->proto.imapc;
+  CURLcode result;
+
+  result = Curl_ssl_connect_nonblocking(conn, FIRSTSOCKET, &imapc->ssldone);
+
+  if(!result) {
+    if(imapc->state != IMAP_UPGRADETLS)
+      state(conn, IMAP_UPGRADETLS);
+
+    if(imapc->ssldone) {
+      imap_to_imaps(conn);
+      result = imap_state_capability(conn);
+    }
+  }
+
+  return result;
+}
+
+static CURLcode imap_state_login(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
-  struct imap_conn *imapc = &conn->proto.imapc;
-
-  imapc->authmechs = 0;         /* No known authentication mechanisms yet */
-  imapc->authused = 0;          /* Clear the authentication mechanism used */
+  struct FTP *imap = conn->data->state.proto.imap;
+  char *user;
+  char *passwd;
 
   /* Check we have a username and password to authenticate with and end the
      connect phase if we don't */
@@ -485,23 +537,9 @@ static CURLcode imap_state_capability(struct connectdata *conn)
     return result;
   }
 
-  /* Send the CAPABILITY command */
-  result = imap_sendf(conn, "CAPABILITY");
-
-  if(result)
-    return result;
-
-  state(conn, IMAP_CAPABILITY);
-
-  return CURLE_OK;
-}
-
-static CURLcode imap_state_login(struct connectdata *conn)
-{
-  CURLcode result;
-  struct FTP *imap = conn->data->state.proto.imap;
-  char *user = imap_atom(imap->user);
-  char *passwd = imap_atom(imap->passwd);
+  /* Make sure the username and password are in the correct atom format */
+  user = imap_atom(imap->user);
+  passwd = imap_atom(imap->passwd);
 
   /* Send USER and password */
   result = imap_sendf(conn, "LOGIN %s %s", user ? user : "",
@@ -527,6 +565,14 @@ static CURLcode imap_authenticate(struct connectdata *conn)
   size_t len = 0;
   imapstate state1 = IMAP_STOP;
   imapstate state2 = IMAP_STOP;
+
+  /* Check we have a username and password to authenticate with and end the
+     connect phase if we don't */
+  if(!conn->bits.user_passwd) {
+    state(conn, IMAP_STOP);
+
+    return result;
+  }
 
   /* Calculate the supported authentication mechanism by decreasing order of
      security */
@@ -609,22 +655,6 @@ static CURLcode imap_authenticate(struct connectdata *conn)
   return result;
 }
 
-/* For the IMAP "protocol connect" and "doing" phases only */
-static int imap_getsock(struct connectdata *conn, curl_socket_t *socks,
-                        int numsocks)
-{
-  return Curl_pp_getsock(&conn->proto.imapc.pp, socks, numsocks);
-}
-
-#ifdef USE_SSL
-static void imap_to_imaps(struct connectdata *conn)
-{
-  conn->handler = &Curl_handler_imaps;
-}
-#else
-#define imap_to_imaps(x) Curl_nop_stmt
-#endif
-
 /* For the initial server greeting */
 static CURLcode imap_state_servergreet_resp(struct connectdata *conn,
                                             int imapcode,
@@ -640,13 +670,39 @@ static CURLcode imap_state_servergreet_resp(struct connectdata *conn,
     return CURLE_FTP_WEIRD_SERVER_REPLY;
   }
 
-  if(data->set.use_ssl && !conn->ssl[FIRSTSOCKET].use) {
-    /* We don't have a SSL/TLS connection yet, but SSL is requested. Switch
-       to TLS connection now */
-    result = imap_state_starttls(conn);
+  result = imap_state_capability(conn);
+
+  return result;
+}
+
+/* For CAPABILITY responses */
+static CURLcode imap_state_capability_resp(struct connectdata *conn,
+                                           int imapcode,
+                                           imapstate instate)
+{
+  CURLcode result = CURLE_OK;
+  struct SessionHandle *data = conn->data;
+  struct imap_conn *imapc = &conn->proto.imapc;
+
+  (void)instate; /* no use for this yet */
+
+  if(imapcode != 'O')
+    result = imap_state_login(conn);
+  else if(data->set.use_ssl && !conn->ssl[FIRSTSOCKET].use) {
+    /* We don't have a SSL/TLS connection yet, but SSL is requested */
+    if(imapc->tls_supported)
+      /* Switch to TLS connection now */
+      result = imap_state_starttls(conn);
+    else if(data->set.use_ssl == CURLUSESSL_TRY)
+      /* Fallback and carry on with authentication */
+      result = imap_authenticate(conn);
+    else {
+      failf(data, "STARTTLS not supported.");
+      result = CURLE_USE_SSL_FAILED;
+    }
   }
   else
-    result = imap_state_capability(conn);
+    result = imap_authenticate(conn);
 
   return result;
 }
@@ -667,47 +723,10 @@ static CURLcode imap_state_starttls_resp(struct connectdata *conn,
       result = CURLE_USE_SSL_FAILED;
     }
     else
-      result = imap_state_capability(conn);
+      result = imap_authenticate(conn);
   }
   else
     result = imap_state_upgrade_tls(conn);
-
-  return result;
-}
-
-static CURLcode imap_state_upgrade_tls(struct connectdata *conn)
-{
-  struct imap_conn *imapc = &conn->proto.imapc;
-  CURLcode result;
-
-  result = Curl_ssl_connect_nonblocking(conn, FIRSTSOCKET, &imapc->ssldone);
-
-  if(!result) {
-    if(imapc->state != IMAP_UPGRADETLS)
-      state(conn, IMAP_UPGRADETLS);
-
-    if(imapc->ssldone) {
-      imap_to_imaps(conn);
-      result = imap_state_capability(conn);
-    }
-  }
-
-  return result;
-}
-
-/* For CAPABILITY responses */
-static CURLcode imap_state_capability_resp(struct connectdata *conn,
-                                           int imapcode,
-                                           imapstate instate)
-{
-  CURLcode result = CURLE_OK;
-
-  (void)instate; /* no use for this yet */
-
-  if(imapcode == 'O')
-    result = imap_authenticate(conn);
-  else
-    result = imap_state_login(conn);
 
   return result;
 }
@@ -1239,12 +1258,12 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
       result = imap_state_servergreet_resp(conn, imapcode, imapc->state);
       break;
 
-    case IMAP_STARTTLS:
-      result = imap_state_starttls_resp(conn, imapcode, imapc->state);
-      break;
-
     case IMAP_CAPABILITY:
       result = imap_state_capability_resp(conn, imapcode, imapc->state);
+      break;
+
+    case IMAP_STARTTLS:
+      result = imap_state_starttls_resp(conn, imapcode, imapc->state);
       break;
 
     case IMAP_AUTHENTICATE_PLAIN:
@@ -1368,6 +1387,13 @@ static CURLcode imap_init(struct connectdata *conn)
   imap->passwd = conn->passwd;
 
   return CURLE_OK;
+}
+
+/* For the IMAP "protocol connect" and "doing" phases only */
+static int imap_getsock(struct connectdata *conn, curl_socket_t *socks,
+                        int numsocks)
+{
+  return Curl_pp_getsock(&conn->proto.imapc.pp, socks, numsocks);
 }
 
 /***********************************************************************

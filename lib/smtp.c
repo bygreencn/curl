@@ -204,6 +204,15 @@ static const struct Curl_handler Curl_handler_smtps_proxy = {
 #endif
 #endif
 
+#ifdef USE_SSL
+static void smtp_to_smtps(struct connectdata *conn)
+{
+  conn->handler = &Curl_handler_smtps;
+}
+#else
+#define smtp_to_smtps(x) Curl_nop_stmt
+#endif
+
 /* Function that checks for an ending SMTP status code at the start of the
    given string, but also detects various capabilities from the EHLO response
    including the supported authentication mechanisms. */
@@ -228,8 +237,12 @@ static int smtp_endofresp(struct pingpong *pp, int *resp)
     line += 4;
     len -= 4;
 
+    /* Does the server support the STARTTLS capability? */
+    if(len >= 8 && !memcmp(line, "STARTTLS", 8))
+      smtpc->tls_supported = TRUE;
+
     /* Does the server support the SIZE capability? */
-    if(len >= 4 && !memcmp(line, "SIZE", 4))
+    else if(len >= 4 && !memcmp(line, "SIZE", 4))
       smtpc->size_supported = TRUE;
 
     /* Do we have the authentication mechanism list? */
@@ -237,6 +250,7 @@ static int smtp_endofresp(struct pingpong *pp, int *resp)
       line += 5;
       len -= 5;
 
+      /* Loop through the data line */
       for(;;) {
         while(len &&
               (*line == ' ' || *line == '\t' ||
@@ -329,6 +343,7 @@ static CURLcode smtp_state_ehlo(struct connectdata *conn)
   smtpc->authmechs = 0;         /* No known authentication mechanisms yet */
   smtpc->authused = 0;          /* Clear the authentication mechanism used
                                    for esmtp connections */
+  smtpc->tls_supported = FALSE; /* Clear the TLS capability */
 
   /* Send the EHLO command */
   result = Curl_pp_sendf(&smtpc->pp, "EHLO %s", smtpc->domain);
@@ -369,6 +384,26 @@ static CURLcode smtp_state_starttls(struct connectdata *conn)
 
   if(!result)
     state(conn, SMTP_STARTTLS);
+
+  return result;
+}
+
+static CURLcode smtp_state_upgrade_tls(struct connectdata *conn)
+{
+  struct smtp_conn *smtpc = &conn->proto.smtpc;
+  CURLcode result;
+
+  result = Curl_ssl_connect_nonblocking(conn, FIRSTSOCKET, &smtpc->ssldone);
+
+  if(!result) {
+    if(smtpc->state != SMTP_UPGRADETLS)
+      state(conn, SMTP_UPGRADETLS);
+
+    if(smtpc->ssldone) {
+      smtp_to_smtps(conn);
+      result = smtp_state_ehlo(conn);
+    }
+  }
 
   return result;
 }
@@ -462,22 +497,6 @@ static CURLcode smtp_authenticate(struct connectdata *conn)
   return result;
 }
 
-/* For the SMTP "protocol connect" and "doing" phases only */
-static int smtp_getsock(struct connectdata *conn, curl_socket_t *socks,
-                        int numsocks)
-{
-  return Curl_pp_getsock(&conn->proto.smtpc.pp, socks, numsocks);
-}
-
-#ifdef USE_SSL
-static void smtp_to_smtps(struct connectdata *conn)
-{
-  conn->handler = &Curl_handler_smtps;
-}
-#else
-#define smtp_to_smtps(x) Curl_nop_stmt
-#endif
-
 /* For the initial server greeting */
 static CURLcode smtp_state_servergreet_resp(struct connectdata *conn,
                                             int smtpcode,
@@ -522,32 +541,13 @@ static CURLcode smtp_state_starttls_resp(struct connectdata *conn,
   return result;
 }
 
-static CURLcode smtp_state_upgrade_tls(struct connectdata *conn)
-{
-  struct smtp_conn *smtpc = &conn->proto.smtpc;
-  CURLcode result;
-
-  result = Curl_ssl_connect_nonblocking(conn, FIRSTSOCKET, &smtpc->ssldone);
-
-  if(!result) {
-    if(smtpc->state != SMTP_UPGRADETLS)
-      state(conn, SMTP_UPGRADETLS);
-
-    if(smtpc->ssldone) {
-      smtp_to_smtps(conn);
-      result = smtp_state_ehlo(conn);
-    }
-  }
-
-  return result;
-}
-
 /* For EHLO responses */
 static CURLcode smtp_state_ehlo_resp(struct connectdata *conn, int smtpcode,
                                      smtpstate instate)
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
+  struct smtp_conn *smtpc = &conn->proto.smtpc;
 
   (void)instate; /* no use for this yet */
 
@@ -561,9 +561,17 @@ static CURLcode smtp_state_ehlo_resp(struct connectdata *conn, int smtpcode,
     }
   }
   else if(data->set.use_ssl && !conn->ssl[FIRSTSOCKET].use) {
-    /* We don't have a SSL/TLS connection yet, but SSL is requested. Switch
-       to TLS connection now */
-    result = smtp_state_starttls(conn);
+    /* We don't have a SSL/TLS connection yet, but SSL is requested */
+    if(smtpc->tls_supported)
+      /* Switch to TLS connection now */
+      result = smtp_state_starttls(conn);
+    else if(data->set.use_ssl == CURLUSESSL_TRY)
+      /* Fallback and carry on with authentication */
+      result = smtp_authenticate(conn);
+    else {
+      failf(data, "STARTTLS not supported.");
+      result = CURLE_USE_SSL_FAILED;
+    }
   }
   else
     result = smtp_authenticate(conn);
@@ -1295,6 +1303,13 @@ static CURLcode smtp_init(struct connectdata *conn)
   smtp->passwd = conn->passwd;
 
   return CURLE_OK;
+}
+
+/* For the SMTP "protocol connect" and "doing" phases only */
+static int smtp_getsock(struct connectdata *conn, curl_socket_t *socks,
+                        int numsocks)
+{
+  return Curl_pp_getsock(&conn->proto.smtpc.pp, socks, numsocks);
 }
 
 /***********************************************************************

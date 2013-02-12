@@ -31,10 +31,10 @@ typedef enum {
   IMAP_STOP,         /* do nothing state, stops the state machine */
   IMAP_SERVERGREET,  /* waiting for the initial greeting immediately after
                         a connect */
+  IMAP_CAPABILITY,
   IMAP_STARTTLS,
   IMAP_UPGRADETLS,   /* asynchronously upgrade the connection to SSL/TLS
                        (multi mode only) */
-  IMAP_CAPABILITY,
   IMAP_AUTHENTICATE_PLAIN,
   IMAP_AUTHENTICATE_LOGIN,
   IMAP_AUTHENTICATE_LOGIN_PASSWD,
@@ -62,6 +62,7 @@ struct imap_conn {
   int cmdid;              /* Last used command ID */
   char resptag[5];        /* Response tag to wait for */
   bool ssldone;           /* Is connect() over SSL done? */
+  bool tls_supported;     /* StartTLS capability supported by server */
   bool login_disabled;    /* LOGIN command explicitly disabled by server */
   bool ir_supported;      /* Initial response supported by server */
 };

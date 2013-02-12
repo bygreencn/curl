@@ -29,10 +29,10 @@ typedef enum {
   POP3_STOP,         /* do nothing state, stops the state machine */
   POP3_SERVERGREET,  /* waiting for the initial greeting immediately after
                         a connect */
+  POP3_CAPA,
   POP3_STARTTLS,
   POP3_UPGRADETLS,   /* asynchronously upgrade the connection to SSL/TLS
                        (multi mode only) */
-  POP3_CAPA,
   POP3_AUTH_PLAIN,
   POP3_AUTH_LOGIN,
   POP3_AUTH_LOGIN_PASSWD,
@@ -66,6 +66,7 @@ struct pop3_conn {
   char *apoptimestamp;    /* APOP timestamp from the server greeting */
   pop3state state;        /* Always use pop3.c:state() to change state! */
   bool ssldone;           /* Is connect() over SSL done? */
+  bool tls_supported;     /* StartTLS capability supported by server */
 };
 
 extern const struct Curl_handler Curl_handler_pop3;
