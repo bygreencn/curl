@@ -378,7 +378,7 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
           wordlen++;
 
         /* Does the server support the STARTTLS capability? */
-        if(len >= 8 && !memcmp(line, "STARTTLS", 8))
+        if(wordlen >= 8 && !memcmp(line, "STARTTLS", 8))
           imapc->tls_supported = TRUE;
 
         /* Has the server explicitly disabled clear text authentication? */
@@ -1457,6 +1457,7 @@ static CURLcode imap_done(struct connectdata *conn, CURLcode status,
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
   struct FTP *imap = data->state.proto.imap;
+  struct imap_conn *imapc= &conn->proto.imapc;
 
   (void)premature;
 
@@ -1472,6 +1473,9 @@ static CURLcode imap_done(struct connectdata *conn, CURLcode status,
     conn->bits.close = TRUE; /* marked for closure */
     result = status;         /* use the already set error code */
   }
+
+  /* Cleanup our per-request based variables */
+  Curl_safefree(imapc->mailbox);
 
   /* Clear the transfer mode for the next connection */
   imap->transfer = FTPTRANSFER_BODY;
@@ -1603,9 +1607,6 @@ static CURLcode imap_disconnect(struct connectdata *conn, bool dead_connection)
 
   /* Cleanup the SASL module */
   Curl_sasl_cleanup(conn, imapc->authused);
-
-  /* Cleanup our connection based variables */
-  Curl_safefree(imapc->mailbox);
 
   return CURLE_OK;
 }
