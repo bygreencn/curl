@@ -334,27 +334,29 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
   size_t id_len = strlen(id);
   size_t wordlen;
 
-  /* Do we have a command response? */
-  if(len >= id_len + 3) {
-    if(!memcmp(id, line, id_len) && line[id_len] == ' ') {
-      *resp = line[id_len + 1]; /* O, N or B */
+  /* Do we have a tagged command response? */
+  if(len >= id_len + 1 && !memcmp(id, line, id_len) && line[id_len] == ' ') {
+    line += id_len + 1;
+    len -= id_len + 1;
 
-      return TRUE;
+    if(len >= 2 && !memcmp(line, "OK", 2))
+      *resp = 'O';
+    else if(len >= 2 && !memcmp(line, "NO", 2))
+      *resp = 'N';
+    else if(len >= 3 && !memcmp(line, "BAD", 3))
+      *resp = 'B';
+    else {
+      failf(conn->data, "Bad tagged response");
+      *resp = -1;
     }
-  }
-
-  /* Do we have a continuation response? */
-  if((len == 3 && !memcmp("+", line, 1)) ||
-     (len >= 2 && !memcmp("+ ", line, 2))) {
-    *resp = '+';
 
     return TRUE;
   }
 
-  /* Are we processing CAPABILITY command data? */
-  if(imapc->state == IMAP_CAPABILITY) {
-    /* Do we have a valid response? */
-    if(len >= 2 && !memcmp("* ", line, 2)) {
+  /* Do we have an untagged command response */
+  if(len >= 2 && !memcmp("* ", line, 2)) {
+    /* Are we processing CAPABILITY command data? */
+    if(imapc->state == IMAP_CAPABILITY) {
       line += 2;
       len -= 2;
 
@@ -378,7 +380,7 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
           wordlen++;
 
         /* Does the server support the STARTTLS capability? */
-        if(wordlen >= 8 && !memcmp(line, "STARTTLS", 8))
+        if(wordlen == 8 && !memcmp(line, "STARTTLS", 8))
           imapc->tls_supported = TRUE;
 
         /* Has the server explicitly disabled clear text authentication? */
@@ -415,16 +417,41 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
         line += wordlen;
         len -= wordlen;
       }
+
+      return FALSE;
     }
-  }
-  /* Are we processing FETCH command responses? */
-  else if(imapc->state == IMAP_FETCH) {
-    /* Do we have a valid response? */
-    if(len >= 2 && !memcmp("* ", line, 2)) {
+    /* Are we processing FETCH command responses? */
+    else if(imapc->state == IMAP_FETCH) {
       *resp = '*';
 
       return TRUE;
     }
+  }
+
+  /* Do we have a continuation response? */
+  if((len == 3 && !memcmp("+", line, 1)) ||
+     (len >= 2 && !memcmp("+ ", line, 2))) {
+    switch(imapc->state) {
+      /* States which are interested in continuation responses */
+      case IMAP_AUTHENTICATE_PLAIN:
+      case IMAP_AUTHENTICATE_LOGIN:
+      case IMAP_AUTHENTICATE_LOGIN_PASSWD:
+      case IMAP_AUTHENTICATE_CRAMMD5:
+      case IMAP_AUTHENTICATE_DIGESTMD5:
+      case IMAP_AUTHENTICATE_DIGESTMD5_RESP:
+      case IMAP_AUTHENTICATE_NTLM:
+      case IMAP_AUTHENTICATE_NTLM_TYPE2MSG:
+      case IMAP_AUTHENTICATE:
+        *resp = '+';
+        break;
+
+      default:
+        failf(conn->data, "Unexpected continuation response");
+        *resp = -1;
+        break;
+    }
+
+    return TRUE;
   }
 
   return FALSE; /* Nothing for us */
@@ -523,7 +550,6 @@ static CURLcode imap_state_upgrade_tls(struct connectdata *conn)
 static CURLcode imap_state_login(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
-  struct FTP *imap = conn->data->state.proto.imap;
   char *user;
   char *passwd;
 
@@ -536,10 +562,10 @@ static CURLcode imap_state_login(struct connectdata *conn)
   }
 
   /* Make sure the username and password are in the correct atom format */
-  user = imap_atom(imap->user);
-  passwd = imap_atom(imap->passwd);
+  user = imap_atom(conn->user);
+  passwd = imap_atom(conn->passwd);
 
-  /* Send USER and password */
+  /* Send the LOGIN command */
   result = imap_sendf(conn, "LOGIN %s %s", user ? user : "",
                       passwd ? passwd : "");
 
@@ -653,6 +679,54 @@ static CURLcode imap_authenticate(struct connectdata *conn)
   return result;
 }
 
+/* Start the DO phase */
+static CURLcode imap_select(struct connectdata *conn)
+{
+  CURLcode result = CURLE_OK;
+  struct SessionHandle *data = conn->data;
+  struct IMAP *imap = data->state.proto.imap;
+  char *mailbox;
+
+  mailbox = imap_atom(imap->mailbox ? imap->mailbox : "");
+  if(!mailbox)
+    result = CURLE_OUT_OF_MEMORY;
+  else
+    result = imap_sendf(conn, "SELECT %s", mailbox);
+
+  Curl_safefree(mailbox);
+  if(result)
+    return result;
+
+  state(conn, IMAP_SELECT);
+
+  return result;
+}
+
+static CURLcode imap_fetch(struct connectdata *conn)
+{
+  CURLcode result = CURLE_OK;
+  struct IMAP *imap = conn->data->state.proto.imap;
+
+  /* Send the FETCH command */
+  result = imap_sendf(conn, "FETCH %s BODY[%s]",
+                      imap->uid ? imap->uid : "1",
+                      imap->section ? imap->section : "");
+  if(result)
+    return result;
+
+  /*
+   * When issued, the server will respond with a single line similar to
+   * '* 1 FETCH (BODY[TEXT] {2021}'
+   *
+   * Identifying the fetch and how many bytes of contents we can expect. We
+   * must extract that number before continuing to "download as usual".
+   */
+
+  state(conn, IMAP_FETCH);
+
+  return result;
+}
+
 /* For the initial server greeting */
 static CURLcode imap_state_servergreet_resp(struct connectdata *conn,
                                             int imapcode,
@@ -665,7 +739,7 @@ static CURLcode imap_state_servergreet_resp(struct connectdata *conn,
 
   if(imapcode != 'O') {
     failf(data, "Got unexpected imap-server response");
-    return CURLE_FTP_WEIRD_SERVER_REPLY;
+    return CURLE_FTP_WEIRD_SERVER_REPLY; /* TODO: fix this code */
   }
 
   result = imap_state_capability(conn);
@@ -1084,46 +1158,6 @@ static CURLcode imap_state_login_resp(struct connectdata *conn,
   return result;
 }
 
-/* Start the DO phase */
-static CURLcode imap_select(struct connectdata *conn)
-{
-  CURLcode result = CURLE_OK;
-  struct imap_conn *imapc = &conn->proto.imapc;
-
-  result = imap_sendf(conn, "SELECT %s",
-                      imapc->mailbox ? imapc->mailbox : "");
-  if(result)
-    return result;
-
-  state(conn, IMAP_SELECT);
-
-  return result;
-}
-
-static CURLcode imap_fetch(struct connectdata *conn)
-{
-  CURLcode result = CURLE_OK;
-
-  /* TODO: make this select the correct mail
-   * Use "1 body[text]" to get the full mail body of mail 1
-   */
-  result = imap_sendf(conn, "FETCH 1 BODY[TEXT]");
-  if(result)
-    return result;
-
-  /*
-   * When issued, the server will respond with a single line similar to
-   * '* 1 FETCH (BODY[TEXT] {2021}'
-   *
-   * Identifying the fetch and how many bytes of contents we can expect. We
-   * must extract that number before continuing to "download as usual".
-   */
-
-  state(conn, IMAP_FETCH);
-
-  return result;
-}
-
 /* For SELECT responses */
 static CURLcode imap_state_select_resp(struct connectdata *conn,
                                        int imapcode,
@@ -1151,7 +1185,6 @@ static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
   struct imap_conn *imapc = &conn->proto.imapc;
-  struct FTP *imap = data->state.proto.imap;
   struct pingpong *pp = &imapc->pp;
   const char *ptr = data->state.buffer;
 
@@ -1168,11 +1201,11 @@ static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
     ptr++;
 
   if(*ptr == '{') {
-    curl_off_t filesize = curlx_strtoofft(ptr + 1, NULL, 10);
-    if(filesize)
-      Curl_pgrsSetDownloadSize(data, filesize);
+    curl_off_t size = curlx_strtoofft(ptr + 1, NULL, 10);
+    if(size)
+      Curl_pgrsSetDownloadSize(data, size);
 
-    infof(data, "Found %" FORMAT_OFF_TU " bytes to download\n", filesize);
+    infof(data, "Found %" FORMAT_OFF_TU " bytes to download\n", size);
 
     if(pp->cache) {
       /* At this point there is a bunch of data in the header "cache" that is
@@ -1180,20 +1213,20 @@ static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
          that there may even be additional "headers" after the body. */
       size_t chunk = pp->cache_size;
 
-      if(chunk > (size_t)filesize)
+      if(chunk > (size_t)size)
         /* the conversion from curl_off_t to size_t is always fine here */
-        chunk = (size_t)filesize;
+        chunk = (size_t)size;
 
       result = Curl_client_write(conn, CLIENTWRITE_BODY, pp->cache, chunk);
       if(result)
         return result;
 
-      filesize -= chunk;
+      size -= chunk;
 
       /* we've now used parts of or the entire cache */
       if(pp->cache_size > chunk) {
         /* part of, move the trailing data to the start and reduce the size */
-        memmove(pp->cache, pp->cache+chunk,
+        memmove(pp->cache, pp->cache + chunk,
                 pp->cache_size - chunk);
         pp->cache_size -= chunk;
       }
@@ -1205,17 +1238,16 @@ static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
       }
     }
 
-    infof(data, "Filesize left: %" FORMAT_OFF_T "\n", filesize);
+    infof(data, "Size left: %" FORMAT_OFF_T "\n", size);
 
-    if(!filesize)
+    if(!size)
       /* the entire data is already transferred! */
       Curl_setup_transfer(conn, -1, -1, FALSE, NULL, -1, NULL);
     else
       /* IMAP download */
-      Curl_setup_transfer(conn, FIRSTSOCKET, filesize, FALSE,
-                          imap->bytecountp, -1, NULL); /* no upload here */
+      Curl_setup_transfer(conn, FIRSTSOCKET, size, FALSE, NULL, -1, NULL);
 
-    data->req.maxdownload = filesize;
+    data->req.maxdownload = size;
   }
   else
     /* We don't know how to parse this line */
@@ -1248,6 +1280,10 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
   result = Curl_pp_readresp(sock, pp, &imapcode, &nread);
   if(result)
     return result;
+
+  /* Was there an error parsing the response line? */
+  if(imapcode == -1)
+    return CURLE_FTP_WEIRD_SERVER_REPLY;
 
   if(imapcode) {
     /* We have now received a full IMAP server response */
@@ -1310,12 +1346,12 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
       result = imap_state_login_resp(conn, imapcode, imapc->state);
       break;
 
-    case IMAP_FETCH:
-      result = imap_state_fetch_resp(conn, imapcode, imapc->state);
-      break;
-
     case IMAP_SELECT:
       result = imap_state_select_resp(conn, imapcode, imapc->state);
+      break;
+
+    case IMAP_FETCH:
+      result = imap_state_fetch_resp(conn, imapcode, imapc->state);
       break;
 
     case IMAP_LOGOUT:
@@ -1365,23 +1401,13 @@ static CURLcode imap_block_statemach(struct connectdata *conn)
 static CURLcode imap_init(struct connectdata *conn)
 {
   struct SessionHandle *data = conn->data;
-  struct FTP *imap = data->state.proto.imap;
+  struct IMAP *imap = data->state.proto.imap;
 
   if(!imap) {
-    imap = data->state.proto.imap = calloc(sizeof(struct FTP), 1);
+    imap = data->state.proto.imap = calloc(sizeof(struct IMAP), 1);
     if(!imap)
       return CURLE_OUT_OF_MEMORY;
   }
-
-  /* Get some initial data into the imap struct */
-  imap->bytecountp = &data->req.bytecount;
-
-  /* No need to duplicate user+password, the connectdata struct won't change
-     during a session, but we re-init them here since on subsequent inits
-     since the conn struct may have changed or been replaced.
-  */
-  imap->user = conn->user;
-  imap->passwd = conn->passwd;
 
   return CURLE_OK;
 }
@@ -1456,17 +1482,15 @@ static CURLcode imap_done(struct connectdata *conn, CURLcode status,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct FTP *imap = data->state.proto.imap;
-  struct imap_conn *imapc= &conn->proto.imapc;
+  struct IMAP *imap = data->state.proto.imap;
 
   (void)premature;
 
   if(!imap)
-    /* When the easy handle is removed from the multi while libcurl is still
-     * trying to resolve the host name, it seems that the IMAP struct is not
-     * yet initialized, but the removal action calls Curl_done() which calls
-     * this function. So we simply return success if no IMAP pointer is set.
-     */
+    /* When the easy handle is removed from the multi interface while libcurl
+       is still trying to resolve the host name, the IMAP struct is not yet
+       initialized. However, the removal action calls Curl_done() which in
+       turn calls this function, so we simply return success. */
     return CURLE_OK;
 
   if(status) {
@@ -1475,9 +1499,12 @@ static CURLcode imap_done(struct connectdata *conn, CURLcode status,
   }
 
   /* Cleanup our per-request based variables */
-  Curl_safefree(imapc->mailbox);
+  Curl_safefree(imap->mailbox);
+  Curl_safefree(imap->uidvalidity);
+  Curl_safefree(imap->uid);
+  Curl_safefree(imap->section);
 
-  /* Clear the transfer mode for the next connection */
+  /* Clear the transfer mode for the next request */
   imap->transfer = FTPTRANSFER_BODY;
 
   return result;
@@ -1487,8 +1514,8 @@ static CURLcode imap_done(struct connectdata *conn, CURLcode status,
  *
  * imap_perform()
  *
- * This is the actual DO function for IMAP. Get a file/directory according to
- * the options previously setup.
+ * This is the actual DO function for IMAP. Fetch a message according to the
+ * options previously setup.
  */
 static CURLcode imap_perform(struct connectdata *conn, bool *connected,
                              bool *dophase_done)
@@ -1500,7 +1527,7 @@ static CURLcode imap_perform(struct connectdata *conn, bool *connected,
 
   if(conn->data->set.opt_no_body) {
     /* Requested no body means no transfer */
-    struct FTP *imap = conn->data->state.proto.imap;
+    struct IMAP *imap = conn->data->state.proto.imap;
     imap->transfer = FTPTRANSFER_INFO;
   }
 
@@ -1511,7 +1538,7 @@ static CURLcode imap_perform(struct connectdata *conn, bool *connected,
   if(result)
     return result;
 
-  /* run the state-machine */
+  /* Run the state-machine */
   result = imap_multi_statemach(conn, dophase_done);
 
   *connected = conn->bits.tcpconnect[FIRSTSOCKET];
@@ -1537,12 +1564,10 @@ static CURLcode imap_do(struct connectdata *conn, bool *done)
 
   *done = FALSE; /* default to false */
 
-  /*
-    Since connections can be re-used between SessionHandles, this might be a
-    connection already existing but on a fresh SessionHandle struct so we must
-    make sure we have a good 'struct IMAP' to play with. For new connections,
-    the struct IMAP is allocated and setup in the imap_connect() function.
-  */
+  /* Since connections can be re-used between SessionHandles, there might be a
+     connection already existing but on a fresh SessionHandle struct. As such
+     we make sure we have a good IMAP struct to play with. For new connections
+     the IMAP struct is allocated and setup in the imap_connect() function. */
   Curl_reset_reqproto(conn);
   result = imap_init(conn);
   if(result)
@@ -1571,6 +1596,7 @@ static CURLcode imap_logout(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
 
+  /* Send the LOGOUT command */
   result = imap_sendf(conn, "LOGOUT", NULL);
   if(result)
     return result;
@@ -1595,12 +1621,12 @@ static CURLcode imap_disconnect(struct connectdata *conn, bool dead_connection)
 
   /* We cannot send quit unconditionally. If this connection is stale or
      bad in any way, sending quit and waiting around here will make the
-     disconnect wait in vain and cause more problems than we need to */
+     disconnect wait in vain and cause more problems than we need to. */
 
   /* The IMAP session may or may not have been allocated/setup at this
      point! */
   if(!dead_connection && imapc->pp.conn)
-    (void)imap_logout(conn); /* ignore errors on the LOGOUT */
+    (void)imap_logout(conn); /* ignore errors on LOGOUT */
 
   /* Disconnect from the server */
   Curl_pp_disconnect(&imapc->pp);
@@ -1613,6 +1639,44 @@ static CURLcode imap_disconnect(struct connectdata *conn, bool dead_connection)
 
 /***********************************************************************
  *
+ * imap_is_bchar()
+ *
+ * Portable test of whether the specified char is a "bchar" as defined in the
+ * grammar of RFC-5092.
+ */
+static bool imap_is_bchar(char ch)
+{
+  switch(ch) {
+    /* bchar */
+    case ':': case '@': case '/':
+    /* bchar -> achar */
+    case '&': case '=':
+    /* bchar -> achar -> uchar -> unreserved */
+    case '0': case '1': case '2': case '3': case '4': case '5': case '6':
+    case '7': case '8': case '9':
+    case 'A': case 'B': case 'C': case 'D': case 'E': case 'F': case 'G':
+    case 'H': case 'I': case 'J': case 'K': case 'L': case 'M': case 'N':
+    case 'O': case 'P': case 'Q': case 'R': case 'S': case 'T': case 'U':
+    case 'V': case 'W': case 'X': case 'Y': case 'Z':
+    case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': case 'g':
+    case 'h': case 'i': case 'j': case 'k': case 'l': case 'm': case 'n':
+    case 'o': case 'p': case 'q': case 'r': case 's': case 't': case 'u':
+    case 'v': case 'w': case 'x': case 'y': case 'z':
+    case '-': case '.': case '_': case '~':
+    /* bchar -> achar -> uchar -> sub-delims-sh */
+    case '!': case '$': case '\'': case '(': case ')': case '*':
+    case '+': case ',':
+    /* bchar -> achar -> uchar -> pct-encoded */
+    case '%': /* HEXDIG chars are already included above */
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+/***********************************************************************
+ *
  * imap_parse_url_path()
  *
  * Parse the URL path into separate path components.
@@ -1620,22 +1684,111 @@ static CURLcode imap_disconnect(struct connectdata *conn, bool dead_connection)
  */
 static CURLcode imap_parse_url_path(struct connectdata *conn)
 {
-  /* The imap struct is already inited in imap_connect() */
-  struct imap_conn *imapc = &conn->proto.imapc;
+  /* The imap struct is already initialised in imap_connect() */
+  CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  const char *path = data->state.path;
+  struct IMAP *imap = data->state.proto.imap;
+  const char *begin = data->state.path;
+  const char *ptr = begin;
 
-  if(!*path)
-    path = "INBOX";
+  /* See how much of the URL is a valid path and decode it */
+  while(imap_is_bchar(*ptr))
+    ptr++;
 
-  /* URL decode the path and use this mailbox */
-  return Curl_urldecode(data, path, 0, &imapc->mailbox, NULL, TRUE);
+  if(ptr != begin) {
+    /* Remove the trailing slash if present */
+    const char *end = ptr;
+    if(end > begin && end[-1] == '/')
+      end--;
+
+    result = Curl_urldecode(data, begin, end - begin, &imap->mailbox, NULL,
+                            TRUE);
+    if(result)
+      return result;
+  }
+  else
+    imap->mailbox = NULL;
+
+  /* There can be any number of parameters in the form ";NAME=VALUE" */
+  while(*ptr == ';') {
+    char *name;
+    char *value;
+    size_t valuelen;
+
+    /* Find the length of the name parameter */
+    begin = ++ptr;
+    while(*ptr && *ptr != '=')
+      ptr++;
+
+    if(!*ptr)
+      return CURLE_URL_MALFORMAT;
+
+    /* Decode the name parameter */
+    result = Curl_urldecode(data, begin, ptr - begin, &name, NULL, TRUE);
+    if(result)
+      return result;
+
+    /* Find the length of the value parameter */
+    begin = ++ptr;
+    while(imap_is_bchar(*ptr))
+      ptr++;
+
+    /* Decode the value parameter */
+    result = Curl_urldecode(data, begin, ptr - begin, &value, &valuelen, TRUE);
+    if(result) {
+      Curl_safefree(name);
+      return result;
+    }
+
+    DEBUGF(infof(conn->data, "IMAP URL parameter '%s' = '%s'\n", name, value));
+
+    /* Process the known hierarchical parameters (UIDVALIDITY, UID and SECTION)
+       stripping of the trailing slash character if it is present.
+
+       Note: Unknown parameters trigger a URL_MALFORMAT error. */
+    if(Curl_raw_equal(name, "UIDVALIDITY") && !imap->uidvalidity) {
+      if(valuelen > 0 && value[valuelen - 1] == '/')
+        value[valuelen - 1] = '\0';
+
+      imap->uidvalidity = value;
+      value = NULL;
+    }
+    else if(Curl_raw_equal(name, "UID") && !imap->uid) {
+      if(valuelen > 0 && value[valuelen - 1] == '/')
+        value[valuelen - 1] = '\0';
+
+      imap->uid = value;
+      value = NULL;
+    }
+    else if(Curl_raw_equal(name, "SECTION") && !imap->section) {
+      if(valuelen > 0 && value[valuelen - 1] == '/')
+        value[valuelen - 1] = '\0';
+
+      imap->section = value;
+      value = NULL;
+    }
+    else {
+      Curl_safefree(name);
+      Curl_safefree(value);
+
+      return CURLE_URL_MALFORMAT;
+    }
+
+    Curl_safefree(name);
+    Curl_safefree(value);
+  }
+
+  /* Any extra stuff at the end of the URL is an error */
+  if(*ptr)
+    return CURLE_URL_MALFORMAT;
+
+  return CURLE_OK;
 }
 
 /* Call this when the DO phase has completed */
 static CURLcode imap_dophase_done(struct connectdata *conn, bool connected)
 {
-  struct FTP *imap = conn->data->state.proto.imap;
+  struct IMAP *imap = conn->data->state.proto.imap;
 
   (void)connected;
 

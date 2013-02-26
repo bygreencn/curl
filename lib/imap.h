@@ -51,11 +51,22 @@ typedef enum {
   IMAP_LAST          /* never used */
 } imapstate;
 
+/* This IMAP struct is used in the SessionHandle. All IMAP data that is
+   connection-oriented must be in imap_conn to properly deal with the fact that
+   perhaps the SessionHandle is changed between the times the connection is
+   used. */
+struct IMAP {
+  curl_pp_transfer transfer;
+  char *mailbox;          /* Mailbox to select */
+  char *uidvalidity;      /* UIDVALIDITY to check in select */
+  char *uid;              /* Message UID to fetch */
+  char *section;          /* Message SECTION to fetch */
+};
+
 /* imap_conn is used for struct connection-oriented data in the connectdata
    struct */
 struct imap_conn {
   struct pingpong pp;
-  char *mailbox;          /* Mailbox to select */
   unsigned int authmechs; /* Accepted authentication mechanisms */
   unsigned int authused;  /* Auth mechanism used for the connection */
   imapstate state;        /* Always use imap.c:state() to change state! */
