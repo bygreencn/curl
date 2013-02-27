@@ -323,16 +323,49 @@ static char* imap_atom(const char* str)
   return newstr;
 }
 
-/* Function that checks for an ending IMAP status code at the start of the
-   given string but also detects various capabilities from the CAPABILITY
-   response including the supported authentication mechanisms. */
+/* Determines whether the untagged response is related to a specified
+   command by checking if it is in format "* <command-name> ..." or
+   "* <number> <command-name> ...". The "* " marker is assumed to have
+   already been checked by the caller. */
+static bool imap_matchresp(const char *line, size_t len, const char *cmd)
+{
+  const char *end = line + len;
+  size_t cmd_len = strlen(cmd);
+
+  /* Skip the untagged response marker */
+  line += 2;
+
+  /* Do we have a number after the marker? */
+  if(line < end && ISDIGIT(*line)) {
+    /* Skip the number */
+    do
+      line++;
+    while(line < end && ISDIGIT(*line));
+
+    /* Do we have the space character? */
+    if(line == end || *line != ' ')
+      return FALSE;
+
+    line++;
+  }
+
+  /* Does the command name match and is it followed by a space character or at
+     the end of line? */
+  if(line + cmd_len <= end && Curl_raw_nequal(line, cmd, cmd_len) &&
+     (line[cmd_len] == ' ' || line + cmd_len == end))
+    return TRUE;
+
+  return FALSE;
+}
+
+/* Function that checks whether the given string is a valid tagged, untagged
+   or continuation response which can be processed by the response handler. */
 static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
                            int *resp)
 {
   struct imap_conn *imapc = &conn->proto.imapc;
   const char *id = imapc->resptag;
   size_t id_len = strlen(id);
-  size_t wordlen;
 
   /* Do we have a tagged command response? */
   if(len >= id_len + 1 && !memcmp(id, line, id_len) && line[id_len] == ' ') {
@@ -353,79 +386,32 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
     return TRUE;
   }
 
-  /* Do we have an untagged command response */
+  /* Do we have an untagged command response? */
   if(len >= 2 && !memcmp("* ", line, 2)) {
-    /* Are we processing CAPABILITY command data? */
-    if(imapc->state == IMAP_CAPABILITY) {
-      line += 2;
-      len -= 2;
+    switch(imapc->state) {
+      /* States which are interested in untagged responses */
+      case IMAP_CAPABILITY:
+        if(!imap_matchresp(line, len, "CAPABILITY"))
+          return FALSE;
+        break;
 
-      /* Loop through the data line */
-      for(;;) {
-        while(len &&
-              (*line == ' ' || *line == '\t' ||
-               *line == '\r' || *line == '\n')) {
+      case IMAP_SELECT:
+        /* SELECT is special in that its untagged responses does not have a
+           common prefix so accept anything! */
+        break;
 
-          line++;
-          len--;
-        }
+      case IMAP_FETCH:
+        if(!imap_matchresp(line, len, "FETCH"))
+          return FALSE;
+        break;
 
-        if(!len)
-          break;
-
-        /* Extract the word */
-        for(wordlen = 0; wordlen < len && line[wordlen] != ' ' &&
-              line[wordlen] != '\t' && line[wordlen] != '\r' &&
-              line[wordlen] != '\n';)
-          wordlen++;
-
-        /* Does the server support the STARTTLS capability? */
-        if(wordlen == 8 && !memcmp(line, "STARTTLS", 8))
-          imapc->tls_supported = TRUE;
-
-        /* Has the server explicitly disabled clear text authentication? */
-        else if(wordlen == 13 && !memcmp(line, "LOGINDISABLED", 13))
-          imapc->login_disabled = TRUE;
-
-        /* Does the server support the SASL-IR capability? */
-        else if(wordlen == 7 && !memcmp(line, "SASL-IR", 7))
-          imapc->ir_supported = TRUE;
-
-        /* Do we have a SASL based authentication mechanism? */
-        else if(wordlen > 5 && !memcmp(line, "AUTH=", 5)) {
-          line += 5;
-          len -= 5;
-          wordlen -= 5;
-
-          /* Test the word for a matching authentication mechanism */
-          if(wordlen == 5 && !memcmp(line, "LOGIN", 5))
-            imapc->authmechs |= SASL_MECH_LOGIN;
-          if(wordlen == 5 && !memcmp(line, "PLAIN", 5))
-            imapc->authmechs |= SASL_MECH_PLAIN;
-          else if(wordlen == 8 && !memcmp(line, "CRAM-MD5", 8))
-            imapc->authmechs |= SASL_MECH_CRAM_MD5;
-          else if(wordlen == 10 && !memcmp(line, "DIGEST-MD5", 10))
-            imapc->authmechs |= SASL_MECH_DIGEST_MD5;
-          else if(wordlen == 6 && !memcmp(line, "GSSAPI", 6))
-            imapc->authmechs |= SASL_MECH_GSSAPI;
-          else if(wordlen == 8 && !memcmp(line, "EXTERNAL", 8))
-            imapc->authmechs |= SASL_MECH_EXTERNAL;
-          else if(wordlen == 4 && !memcmp(line, "NTLM", 4))
-            imapc->authmechs |= SASL_MECH_NTLM;
-        }
-
-        line += wordlen;
-        len -= wordlen;
-      }
-
-      return FALSE;
+      /* Ignore other untagged responses */
+      default:
+        return FALSE;
     }
-    /* Are we processing FETCH command responses? */
-    else if(imapc->state == IMAP_FETCH) {
-      *resp = '*';
 
-      return TRUE;
-    }
+    *resp = '*';
+    return TRUE;
   }
 
   /* Do we have a continuation response? */
@@ -685,7 +671,11 @@ static CURLcode imap_select(struct connectdata *conn)
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
   struct IMAP *imap = data->state.proto.imap;
+  struct imap_conn *imapc = &conn->proto.imapc;
   char *mailbox;
+
+  /* Invalidate old information in case we are switching mailboxes */
+  Curl_safefree(imapc->mailbox_uidvalidity);
 
   mailbox = imap_atom(imap->mailbox ? imap->mailbox : "");
   if(!mailbox)
@@ -755,10 +745,71 @@ static CURLcode imap_state_capability_resp(struct connectdata *conn,
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
   struct imap_conn *imapc = &conn->proto.imapc;
+  const char *line = data->state.buffer;
+  size_t wordlen;
 
   (void)instate; /* no use for this yet */
 
-  if(imapcode != 'O')
+  /* Do we have a untagged response? */
+  if(imapcode == '*') {
+    line += 2;
+
+    /* Loop through the data line */
+    for(;;) {
+      while(*line &&
+            (*line == ' ' || *line == '\t' ||
+              *line == '\r' || *line == '\n')) {
+
+        line++;
+      }
+
+      if(!*line)
+        break;
+
+      /* Extract the word */
+      for(wordlen = 0; line[wordlen] && line[wordlen] != ' ' &&
+            line[wordlen] != '\t' && line[wordlen] != '\r' &&
+            line[wordlen] != '\n';)
+        wordlen++;
+
+      /* Does the server support the STARTTLS capability? */
+      if(wordlen == 8 && !memcmp(line, "STARTTLS", 8))
+        imapc->tls_supported = TRUE;
+
+      /* Has the server explicitly disabled clear text authentication? */
+      else if(wordlen == 13 && !memcmp(line, "LOGINDISABLED", 13))
+        imapc->login_disabled = TRUE;
+
+      /* Does the server support the SASL-IR capability? */
+      else if(wordlen == 7 && !memcmp(line, "SASL-IR", 7))
+        imapc->ir_supported = TRUE;
+
+      /* Do we have a SASL based authentication mechanism? */
+      else if(wordlen > 5 && !memcmp(line, "AUTH=", 5)) {
+        line += 5;
+        wordlen -= 5;
+
+        /* Test the word for a matching authentication mechanism */
+        if(wordlen == 5 && !memcmp(line, "LOGIN", 5))
+          imapc->authmechs |= SASL_MECH_LOGIN;
+        if(wordlen == 5 && !memcmp(line, "PLAIN", 5))
+          imapc->authmechs |= SASL_MECH_PLAIN;
+        else if(wordlen == 8 && !memcmp(line, "CRAM-MD5", 8))
+          imapc->authmechs |= SASL_MECH_CRAM_MD5;
+        else if(wordlen == 10 && !memcmp(line, "DIGEST-MD5", 10))
+          imapc->authmechs |= SASL_MECH_DIGEST_MD5;
+        else if(wordlen == 6 && !memcmp(line, "GSSAPI", 6))
+          imapc->authmechs |= SASL_MECH_GSSAPI;
+        else if(wordlen == 8 && !memcmp(line, "EXTERNAL", 8))
+          imapc->authmechs |= SASL_MECH_EXTERNAL;
+        else if(wordlen == 4 && !memcmp(line, "NTLM", 4))
+          imapc->authmechs |= SASL_MECH_NTLM;
+      }
+
+      line += wordlen;
+    }
+  }
+  else if(imapcode != 'O')
     result = imap_state_login(conn);
   else if(data->set.use_ssl && !conn->ssl[FIRSTSOCKET].use) {
     /* We don't have a SSL/TLS connection yet, but SSL is requested */
@@ -1165,15 +1216,34 @@ static CURLcode imap_state_select_resp(struct connectdata *conn,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
+  struct IMAP *imap = conn->data->state.proto.imap;
+  struct imap_conn *imapc = &conn->proto.imapc;
+  const char *line = data->state.buffer;
+  char tmp[20];
 
   (void)instate; /* no use for this yet */
 
-  if(imapcode != 'O') {
+  if(imapcode == '*') {
+    /* See if this is an UIDVALIDITY response */
+    if(sscanf(line + 2, "OK [UIDVALIDITY %19[0123456789]]", tmp) == 1) {
+      Curl_safefree(imapc->mailbox_uidvalidity);
+      imapc->mailbox_uidvalidity = strdup(tmp);
+    }
+  }
+  else if(imapcode != 'O') {
     failf(data, "Select failed");
     result = CURLE_LOGIN_DENIED;
   }
-  else
-    result = imap_fetch(conn);
+  else {
+    /* Check if the UIDVALIDITY has been specified and matches */
+    if(imap->uidvalidity && imapc->mailbox_uidvalidity &&
+       strcmp(imap->uidvalidity, imapc->mailbox_uidvalidity)) {
+      failf(conn->data, "Mailbox UIDVALIDITY has changed");
+      result = CURLE_REMOTE_FILE_NOT_FOUND;
+    }
+    else
+      result = imap_fetch(conn);
+  }
 
   return result;
 }
@@ -1633,6 +1703,9 @@ static CURLcode imap_disconnect(struct connectdata *conn, bool dead_connection)
 
   /* Cleanup the SASL module */
   Curl_sasl_cleanup(conn, imapc->authused);
+
+  /* Cleanup our connection based variables */
+  Curl_safefree(imapc->mailbox_uidvalidity);
 
   return CURLE_OK;
 }
