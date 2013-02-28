@@ -257,7 +257,7 @@ static CURLcode imap_sendf(struct connectdata *conn, const char *fmt, ...)
  * The returned string needs to be freed.
  *
  */
-static char* imap_atom(const char* str)
+static char *imap_atom(const char *str)
 {
   const char *p1;
   char *p2;
@@ -427,7 +427,7 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
       case IMAP_AUTHENTICATE_DIGESTMD5_RESP:
       case IMAP_AUTHENTICATE_NTLM:
       case IMAP_AUTHENTICATE_NTLM_TYPE2MSG:
-      case IMAP_AUTHENTICATE:
+      case IMAP_AUTHENTICATE_FINAL:
         *resp = '+';
         break;
 
@@ -625,7 +625,7 @@ static CURLcode imap_authenticate(struct connectdata *conn)
   else if(imapc->authmechs & SASL_MECH_PLAIN) {
     mech = "PLAIN";
     state1 = IMAP_AUTHENTICATE_PLAIN;
-    state2 = IMAP_AUTHENTICATE;
+    state2 = IMAP_AUTHENTICATE_FINAL;
     imapc->authused = SASL_MECH_PLAIN;
 
     if(imapc->ir_supported)
@@ -674,7 +674,8 @@ static CURLcode imap_select(struct connectdata *conn)
   struct imap_conn *imapc = &conn->proto.imapc;
   char *mailbox;
 
-  /* Invalidate old information in case we are switching mailboxes */
+  /* Invalidate old information as we are switching mailboxes */
+  Curl_safefree(imapc->mailbox);
   Curl_safefree(imapc->mailbox_uidvalidity);
 
   mailbox = imap_atom(imap->mailbox ? imap->mailbox : "");
@@ -729,10 +730,10 @@ static CURLcode imap_state_servergreet_resp(struct connectdata *conn,
 
   if(imapcode != 'O') {
     failf(data, "Got unexpected imap-server response");
-    return CURLE_FTP_WEIRD_SERVER_REPLY; /* TODO: fix this code */
+    result = CURLE_FTP_WEIRD_SERVER_REPLY; /* TODO: fix this code */
   }
-
-  result = imap_state_capability(conn);
+  else
+    result = imap_state_capability(conn);
 
   return result;
 }
@@ -809,23 +810,25 @@ static CURLcode imap_state_capability_resp(struct connectdata *conn,
       line += wordlen;
     }
   }
-  else if(imapcode != 'O')
-    result = imap_state_login(conn);
-  else if(data->set.use_ssl && !conn->ssl[FIRSTSOCKET].use) {
-    /* We don't have a SSL/TLS connection yet, but SSL is requested */
-    if(imapc->tls_supported)
-      /* Switch to TLS connection now */
-      result = imap_state_starttls(conn);
-    else if(data->set.use_ssl == CURLUSESSL_TRY)
-      /* Fallback and carry on with authentication */
-      result = imap_authenticate(conn);
-    else {
-      failf(data, "STARTTLS not supported.");
-      result = CURLE_USE_SSL_FAILED;
+  else if(imapcode == 'O') {
+    if(data->set.use_ssl && !conn->ssl[FIRSTSOCKET].use) {
+      /* We don't have a SSL/TLS connection yet, but SSL is requested */
+      if(imapc->tls_supported)
+        /* Switch to TLS connection now */
+        result = imap_state_starttls(conn);
+      else if(data->set.use_ssl == CURLUSESSL_TRY)
+        /* Fallback and carry on with authentication */
+        result = imap_authenticate(conn);
+      else {
+        failf(data, "STARTTLS not supported.");
+        result = CURLE_USE_SSL_FAILED;
+      }
     }
+    else
+      result = imap_authenticate(conn);
   }
   else
-    result = imap_authenticate(conn);
+    result = imap_state_login(conn);
 
   return result;
 }
@@ -881,7 +884,7 @@ static CURLcode imap_state_auth_plain_resp(struct connectdata *conn,
         result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", plainauth);
 
         if(!result)
-          state(conn, IMAP_AUTHENTICATE);
+          state(conn, IMAP_AUTHENTICATE_FINAL);
       }
 
       Curl_safefree(plainauth);
@@ -955,7 +958,7 @@ static CURLcode imap_state_auth_login_password_resp(struct connectdata *conn,
         result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", authpasswd);
 
         if(!result)
-          state(conn, IMAP_AUTHENTICATE);
+          state(conn, IMAP_AUTHENTICATE_FINAL);
       }
 
       Curl_safefree(authpasswd);
@@ -1010,7 +1013,7 @@ static CURLcode imap_state_auth_cram_resp(struct connectdata *conn,
       result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", rplyb64);
 
       if(!result)
-        state(conn, IMAP_AUTHENTICATE);
+        state(conn, IMAP_AUTHENTICATE_FINAL);
     }
 
     Curl_safefree(rplyb64);
@@ -1080,7 +1083,7 @@ static CURLcode imap_state_auth_digest_resp_resp(struct connectdata *conn,
     result = Curl_pp_sendf(&conn->proto.imapc.pp, "");
 
     if(!result)
-      state(conn, IMAP_AUTHENTICATE);
+      state(conn, IMAP_AUTHENTICATE_FINAL);
   }
 
   return result;
@@ -1156,7 +1159,7 @@ static CURLcode imap_state_auth_ntlm_type2msg_resp(struct connectdata *conn,
         result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", type3msg);
 
         if(!result)
-          state(conn, IMAP_AUTHENTICATE);
+          state(conn, IMAP_AUTHENTICATE_FINAL);
       }
 
       Curl_safefree(type3msg);
@@ -1230,19 +1233,23 @@ static CURLcode imap_state_select_resp(struct connectdata *conn,
       imapc->mailbox_uidvalidity = strdup(tmp);
     }
   }
-  else if(imapcode != 'O') {
-    failf(data, "Select failed");
-    result = CURLE_LOGIN_DENIED;
-  }
-  else {
+  else if(imapcode == 'O') {
     /* Check if the UIDVALIDITY has been specified and matches */
     if(imap->uidvalidity && imapc->mailbox_uidvalidity &&
        strcmp(imap->uidvalidity, imapc->mailbox_uidvalidity)) {
       failf(conn->data, "Mailbox UIDVALIDITY has changed");
       result = CURLE_REMOTE_FILE_NOT_FOUND;
     }
-    else
+    else {
+      /* Note the currently opened mailbox on this connection */
+      imapc->mailbox = strdup(imap->mailbox);
+
       result = imap_fetch(conn);
+    }
+  }
+  else {
+    failf(data, "Select failed");
+    result = CURLE_LOGIN_DENIED;
   }
 
   return result;
@@ -1346,16 +1353,19 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
   if(pp->sendleft)
     return Curl_pp_flushsend(pp);
 
-  /* Read the response from the server */
-  result = Curl_pp_readresp(sock, pp, &imapcode, &nread);
-  if(result)
-    return result;
+  do {
+    /* Read the response from the server */
+    result = Curl_pp_readresp(sock, pp, &imapcode, &nread);
+    if(result)
+      return result;
 
-  /* Was there an error parsing the response line? */
-  if(imapcode == -1)
-    return CURLE_FTP_WEIRD_SERVER_REPLY;
+    /* Was there an error parsing the response line? */
+    if(imapcode == -1)
+      return CURLE_FTP_WEIRD_SERVER_REPLY;
 
-  if(imapcode) {
+    if(!imapcode)
+      break;
+
     /* We have now received a full IMAP server response */
     switch(imapc->state) {
     case IMAP_SERVERGREET:
@@ -1408,7 +1418,7 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
       break;
 #endif
 
-    case IMAP_AUTHENTICATE:
+    case IMAP_AUTHENTICATE_FINAL:
       result = imap_state_auth_final_resp(conn, imapcode, imapc->state);
       break;
 
@@ -1431,7 +1441,7 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
       state(conn, IMAP_STOP);
       break;
     }
-  }
+  } while(!result && imapc->state != IMAP_STOP && Curl_pp_moredata(pp));
 
   return result;
 }
@@ -1592,6 +1602,9 @@ static CURLcode imap_perform(struct connectdata *conn, bool *connected,
 {
   /* This is IMAP and no proxy */
   CURLcode result = CURLE_OK;
+  struct SessionHandle *data = conn->data;
+  struct IMAP *imap = data->state.proto.imap;
+  struct imap_conn *imapc = &conn->proto.imapc;
 
   DEBUGF(infof(conn->data, "DO phase starts\n"));
 
@@ -1604,7 +1617,17 @@ static CURLcode imap_perform(struct connectdata *conn, bool *connected,
   *dophase_done = FALSE; /* not done yet */
 
   /* Start the first command in the DO phase */
-  result = imap_select(conn);
+  if(imap->mailbox && imapc->mailbox &&
+     !strcmp(imap->mailbox, imapc->mailbox) &&
+     (!imap->uidvalidity || !imapc->mailbox_uidvalidity ||
+      !strcmp(imap->uidvalidity, imapc->mailbox_uidvalidity))) {
+    /* This mailbox (with the same UIDVALIDITY if set) is already selected on
+       this connection so go straight to the next fetch operation */
+    result = imap_fetch(conn);
+  }
+  else
+    result = imap_select(conn);
+  
   if(result)
     return result;
 
@@ -1705,6 +1728,7 @@ static CURLcode imap_disconnect(struct connectdata *conn, bool dead_connection)
   Curl_sasl_cleanup(conn, imapc->authused);
 
   /* Cleanup our connection based variables */
+  Curl_safefree(imapc->mailbox);
   Curl_safefree(imapc->mailbox_uidvalidity);
 
   return CURLE_OK;

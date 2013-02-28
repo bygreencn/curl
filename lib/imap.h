@@ -43,7 +43,7 @@ typedef enum {
   IMAP_AUTHENTICATE_DIGESTMD5_RESP,
   IMAP_AUTHENTICATE_NTLM,
   IMAP_AUTHENTICATE_NTLM_TYPE2MSG,
-  IMAP_AUTHENTICATE,
+  IMAP_AUTHENTICATE_FINAL,
   IMAP_LOGIN,
   IMAP_SELECT,
   IMAP_FETCH,
@@ -76,6 +76,7 @@ struct imap_conn {
   bool tls_supported;         /* StartTLS capability supported by server */
   bool login_disabled;        /* LOGIN command disabled by server */
   bool ir_supported;          /* Initial response supported by server */
+  char *mailbox;              /* The last selected mailbox */
   char *mailbox_uidvalidity;  /* UIDVALIDITY parsed from select response */
 };
 
