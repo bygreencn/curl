@@ -360,7 +360,7 @@ static void state(struct connectdata *conn, pop3state newstate)
     "AUTH_DIGESTMD5_RESP",
     "AUTH_NTLM",
     "AUTH_NTLM_TYPE2MSG",
-    "AUTH",
+    "AUTH_FINAL",
     "APOP",
     "USER",
     "PASS",
@@ -1134,7 +1134,7 @@ static CURLcode pop3_state_command_resp(struct connectdata *conn,
     pp->cache_size = 0;
   }
 
-  /* End of do phase */
+  /* End of DO phase */
   state(conn, POP3_STOP);
 
   return result;
@@ -1625,7 +1625,7 @@ static CURLcode pop3_regular_transfer(struct connectdata *conn,
   return result;
 }
 
-static CURLcode pop3_setup_connection(struct connectdata * conn)
+static CURLcode pop3_setup_connection(struct connectdata *conn)
 {
   struct SessionHandle *data = conn->data;
 

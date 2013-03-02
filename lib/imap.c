@@ -463,10 +463,11 @@ static void state(struct connectdata *conn, imapstate newstate)
     "AUTHENTICATE_DIGESTMD5_RESP",
     "AUTHENTICATE_NTLM",
     "AUTHENTICATE_NTLM_TYPE2MSG",
-    "AUTHENTICATE",
+    "AUTHENTICATE_FINAL",
     "LOGIN",
     "SELECT",
     "FETCH",
+    "FETCH_FINAL",
     "LOGOUT",
     /* LAST */
   };
@@ -491,12 +492,10 @@ static CURLcode imap_state_capability(struct connectdata *conn)
   /* Send the CAPABILITY command */
   result = imap_sendf(conn, "CAPABILITY");
 
-  if(result)
-    return result;
+  if(!result)
+    state(conn, IMAP_CAPABILITY);
 
-  state(conn, IMAP_CAPABILITY);
-
-  return CURLE_OK;
+  return result;
 }
 
 static CURLcode imap_state_starttls(struct connectdata *conn)
@@ -558,12 +557,10 @@ static CURLcode imap_state_login(struct connectdata *conn)
   Curl_safefree(user);
   Curl_safefree(passwd);
 
-  if(result)
-    return result;
+  if(!result)
+    state(conn, IMAP_LOGIN);
 
-  state(conn, IMAP_LOGIN);
-
-  return CURLE_OK;
+  return result;
 }
 
 static CURLcode imap_authenticate(struct connectdata *conn)
@@ -678,17 +675,18 @@ static CURLcode imap_select(struct connectdata *conn)
   Curl_safefree(imapc->mailbox);
   Curl_safefree(imapc->mailbox_uidvalidity);
 
+  /* Make sure the mailbox is in the correct atom format */
   mailbox = imap_atom(imap->mailbox ? imap->mailbox : "");
   if(!mailbox)
     result = CURLE_OUT_OF_MEMORY;
   else
+    /* Send the SELECT command */
     result = imap_sendf(conn, "SELECT %s", mailbox);
 
   Curl_safefree(mailbox);
-  if(result)
-    return result;
 
-  state(conn, IMAP_SELECT);
+  if(!result)
+    state(conn, IMAP_SELECT);
 
   return result;
 }
@@ -702,18 +700,9 @@ static CURLcode imap_fetch(struct connectdata *conn)
   result = imap_sendf(conn, "FETCH %s BODY[%s]",
                       imap->uid ? imap->uid : "1",
                       imap->section ? imap->section : "");
-  if(result)
-    return result;
 
-  /*
-   * When issued, the server will respond with a single line similar to
-   * '* 1 FETCH (BODY[TEXT] {2021}'
-   *
-   * Identifying the fetch and how many bytes of contents we can expect. We
-   * must extract that number before continuing to "download as usual".
-   */
-
-  state(conn, IMAP_FETCH);
+  if(!result)
+    state(conn, IMAP_FETCH);
 
   return result;
 }
@@ -1213,8 +1202,7 @@ static CURLcode imap_state_login_resp(struct connectdata *conn,
 }
 
 /* For SELECT responses */
-static CURLcode imap_state_select_resp(struct connectdata *conn,
-                                       int imapcode,
+static CURLcode imap_state_select_resp(struct connectdata *conn, int imapcode,
                                        imapstate instate)
 {
   CURLcode result = CURLE_OK;
@@ -1255,7 +1243,7 @@ static CURLcode imap_state_select_resp(struct connectdata *conn,
   return result;
 }
 
-/* For the (first line of) FETCH BODY[TEXT] response */
+/* For the (first line of the) FETCH response */
 static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
                                       imapstate instate)
 {
@@ -1270,10 +1258,11 @@ static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
   if('*' != imapcode) {
     Curl_pgrsSetDownloadSize(data, 0);
     state(conn, IMAP_STOP);
-    return CURLE_OK;
+    return CURLE_REMOTE_FILE_NOT_FOUND; /* TODO: Fix error code */
   }
 
-  /* Something like this comes "* 1 FETCH (BODY[TEXT] {2021}\r" */
+  /* Something like this is received "* 1 FETCH (BODY[TEXT] {2021}\r" so parse
+     the continuation data contained within the curly brackets */
   while(*ptr && (*ptr != '{'))
     ptr++;
 
@@ -1291,7 +1280,7 @@ static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
       size_t chunk = pp->cache_size;
 
       if(chunk > (size_t)size)
-        /* the conversion from curl_off_t to size_t is always fine here */
+        /* The conversion from curl_off_t to size_t is always fine here */
         chunk = (size_t)size;
 
       result = Curl_client_write(conn, CLIENTWRITE_BODY, pp->cache, chunk);
@@ -1300,25 +1289,26 @@ static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
 
       size -= chunk;
 
-      /* we've now used parts of or the entire cache */
+      infof(data, "Written %" FORMAT_OFF_TU " bytes, %" FORMAT_OFF_TU
+            " bytes are left for transfer\n", (curl_off_t)chunk, size);
+
+      /* Have we used the entire cache or just part of it?*/
       if(pp->cache_size > chunk) {
-        /* part of, move the trailing data to the start and reduce the size */
-        memmove(pp->cache, pp->cache + chunk,
-                pp->cache_size - chunk);
+        /* Only part of it so shrink the cache to fit the trailing data */
+        memmove(pp->cache, pp->cache + chunk, pp->cache_size - chunk);
         pp->cache_size -= chunk;
       }
       else {
-        /* cache is drained */
+        /* Free the cache */
         Curl_safefree(pp->cache);
-        pp->cache = NULL;
+
+        /* Reset the cache size */
         pp->cache_size = 0;
       }
     }
 
-    infof(data, "Size left: %" FORMAT_OFF_T "\n", size);
-
     if(!size)
-      /* the entire data is already transferred! */
+      /* The entire data is already transferred! */
       Curl_setup_transfer(conn, -1, -1, FALSE, NULL, -1, NULL);
     else
       /* IMAP download */
@@ -1330,7 +1320,27 @@ static CURLcode imap_state_fetch_resp(struct connectdata *conn, int imapcode,
     /* We don't know how to parse this line */
     result = CURLE_FTP_WEIRD_SERVER_REPLY; /* TODO: fix this code */
 
-  /* End of do phase */
+  /* End of DO phase */
+  state(conn, IMAP_STOP);
+
+  return result;
+}
+
+/* For the final response to the FETCH command */
+static CURLcode imap_state_fetch_final_resp(struct connectdata *conn,
+                                            int imapcode,
+                                            imapstate instate)
+{
+  CURLcode result = CURLE_OK;
+
+  (void)instate; /* No use for this yet */
+
+  if('O' != imapcode)
+    result = CURLE_FTP_WEIRD_SERVER_REPLY; /* TODO: Fix error code */
+  else
+    result = CURLE_OK;
+
+  /* End of DONE phase */
   state(conn, IMAP_STOP);
 
   return result;
@@ -1432,6 +1442,10 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
 
     case IMAP_FETCH:
       result = imap_state_fetch_resp(conn, imapcode, imapc->state);
+      break;
+
+    case IMAP_FETCH_FINAL:
+      result = imap_state_fetch_final_resp(conn, imapcode, imapc->state);
       break;
 
     case IMAP_LOGOUT:
@@ -1577,6 +1591,18 @@ static CURLcode imap_done(struct connectdata *conn, CURLcode status,
     conn->bits.close = TRUE; /* marked for closure */
     result = status;         /* use the already set error code */
   }
+  else if(!data->set.connect_only) {
+    state(conn, IMAP_FETCH_FINAL);
+
+    /* Run the state-machine
+
+       TODO: when the multi interface is used, this _really_ should be using
+       the imap_multi_statemach function but we have no general support for
+       non-blocking DONE operations, not in the multi state machine and with
+       Curl_done() invokes on several places in the code!
+    */
+    result = imap_block_statemach(conn);
+  }
 
   /* Cleanup our per-request based variables */
   Curl_safefree(imap->mailbox);
@@ -1610,7 +1636,6 @@ static CURLcode imap_perform(struct connectdata *conn, bool *connected,
 
   if(conn->data->set.opt_no_body) {
     /* Requested no body means no transfer */
-    struct IMAP *imap = conn->data->state.proto.imap;
     imap->transfer = FTPTRANSFER_INFO;
   }
 
@@ -1627,7 +1652,7 @@ static CURLcode imap_perform(struct connectdata *conn, bool *connected,
   }
   else
     result = imap_select(conn);
-  
+
   if(result)
     return result;
 
@@ -1951,7 +1976,7 @@ static CURLcode imap_regular_transfer(struct connectdata *conn,
   return result;
 }
 
-static CURLcode imap_setup_connection(struct connectdata * conn)
+static CURLcode imap_setup_connection(struct connectdata *conn)
 {
   struct SessionHandle *data = conn->data;
 
