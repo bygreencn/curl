@@ -691,7 +691,6 @@ static CURLcode imap_list(struct connectdata *conn)
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
   struct IMAP *imap = data->state.proto.imap;
-  struct imap_conn *imapc = &conn->proto.imapc;
   char *mailbox;
 
   /* Make sure the mailbox is in the correct atom format */
@@ -749,9 +748,15 @@ static CURLcode imap_fetch(struct connectdata *conn)
   CURLcode result = CURLE_OK;
   struct IMAP *imap = conn->data->state.proto.imap;
 
+  /* Check we have a UID */
+  if(!imap->uid) {
+    failf(conn->data, "Cannot FETCH without a UID.");
+    return CURLE_URL_MALFORMAT;
+  }
+
   /* Send the FETCH command */
   result = imap_sendf(conn, "FETCH %s BODY[%s]",
-                      imap->uid ? imap->uid : "1",
+                      imap->uid,
                       imap->section ? imap->section : "");
 
   if(!result)
@@ -762,7 +767,7 @@ static CURLcode imap_fetch(struct connectdata *conn)
 
 static CURLcode imap_append(struct connectdata *conn)
 {
-  CURLcode result;
+  CURLcode result = CURLE_OK;
   struct IMAP *imap = conn->data->state.proto.imap;
   char *mailbox;
 
@@ -1318,23 +1323,16 @@ static CURLcode imap_state_list_resp(struct connectdata *conn, int imapcode,
   (void)instate; /* No use for this yet */
 
   if(imapcode == '*') {
-    /* The client which asked for this custom command should know best
-       how to cope with the result, just send it as body.
-       Add back the LF character temporarily while saving. */
+    /* Temporarily add the LF character back and send as body to the client */
     line[len] = '\n';
     result = Curl_client_write(conn, CLIENTWRITE_BODY, line, len + 1);
     line[len] = '\0';
   }
-  else {
-    /* Final response. Stop and return the final status. */
-    if(imapcode != 'O')
-      result = CURLE_QUOTE_ERROR; /* TODO: Fix error code */
-    else
-      result = CURLE_OK;
-
+  else if(imapcode != 'O')
+    result = CURLE_QUOTE_ERROR; /* TODO: Fix error code */
+  else
     /* End of DO phase */
     state(conn, IMAP_STOP);
-  }
 
   return result;
 }
@@ -1489,10 +1487,8 @@ static CURLcode imap_state_fetch_final_resp(struct connectdata *conn,
   if(imapcode != 'O')
     result = CURLE_FTP_WEIRD_SERVER_REPLY; /* TODO: Fix error code */
   else
-    result = CURLE_OK;
-
-  /* End of DONE phase */
-  state(conn, IMAP_STOP);
+    /* End of DONE phase */
+    state(conn, IMAP_STOP);
 
   return result;
 }
@@ -1510,14 +1506,15 @@ static CURLcode imap_state_append_resp(struct connectdata *conn, int imapcode,
     result = CURLE_UPLOAD_FAILED;
   }
   else {
+    /* Set the progress upload size */
     Curl_pgrsSetUploadSize(data, data->set.infilesize);
 
     /* IMAP upload */
     Curl_setup_transfer(conn, -1, -1, FALSE, NULL, FIRSTSOCKET, NULL);
-  }
 
-  /* End of DO phase */
-  state(conn, IMAP_STOP);
+    /* End of DO phase */
+    state(conn, IMAP_STOP);
+  }
 
   return result;
 }
@@ -1531,47 +1528,11 @@ static CURLcode imap_state_append_final_resp(struct connectdata *conn,
 
   (void)instate; /* No use for this yet */
 
-  /* Final response, stop and return the final status */
-  if(imapcode == 'O')
-    result = CURLE_OK;
-  else
+  if(imapcode != 'O')
     result = CURLE_UPLOAD_FAILED;
-
-  /* End of DONE phase */
-  state(conn, IMAP_STOP);
-
-  return result;
-}
-
-/* For custom request responses */
-static CURLcode imap_state_custom_resp(struct connectdata *conn,
-                                       int imapcode,
-                                       imapstate instate)
-{
-  CURLcode result = CURLE_OK;
-  char *line = conn->data->state.buffer;
-  size_t len = strlen(line);
-
-  (void)instate; /* No use for this yet */
-
-  if(imapcode == '*') {
-    /* The client which asked for this custom command should know best
-       how to cope with the result, just send it as body.
-       Add back the LF character temporarily while saving. */
-    line[len] = '\n';
-    result = Curl_client_write(conn, CLIENTWRITE_BODY, line, len + 1);
-    line[len] = '\0';
-  }
-  else {
-    /* Final response. Stop and return the final status. */
-    if(imapcode != 'O')
-      result = CURLE_QUOTE_ERROR; /* TODO: Fix error code */
-    else
-      result = CURLE_OK;
-
-    /* End of DO phase */
+  else
+    /* End of DONE phase */
     state(conn, IMAP_STOP);
-  }
 
   return result;
 }
@@ -1667,6 +1628,7 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
       break;
 
     case IMAP_LIST:
+    case IMAP_CUSTOM:
       result = imap_state_list_resp(conn, imapcode, imapc->state);
       break;
 
@@ -1688,10 +1650,6 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
 
     case IMAP_APPEND_FINAL:
       result = imap_state_append_final_resp(conn, imapcode, imapc->state);
-      break;
-
-    case IMAP_CUSTOM:
-      result = imap_state_custom_resp(conn, imapcode, imapc->state);
       break;
 
     case IMAP_LOGOUT:
@@ -1727,11 +1685,8 @@ static CURLcode imap_block_statemach(struct connectdata *conn)
   CURLcode result = CURLE_OK;
   struct imap_conn *imapc = &conn->proto.imapc;
 
-  while(imapc->state != IMAP_STOP) {
+  while(imapc->state != IMAP_STOP && !result)
     result = Curl_pp_statemach(&imapc->pp, TRUE);
-    if(result)
-      break;
-  }
 
   return result;
 }
@@ -1918,7 +1873,7 @@ static CURLcode imap_perform(struct connectdata *conn, bool *connected,
   else if(!imap->custom && selected && imap->uid)
     /* FETCH from the same mailbox */
     result = imap_fetch(conn);
-  else if(imap->uid)
+  else if(imap->mailbox && !selected && (imap->custom || imap->uid))
     /* SELECT the mailbox */
     result = imap_select(conn);
   else
