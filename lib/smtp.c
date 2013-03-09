@@ -1565,12 +1565,10 @@ static CURLcode smtp_doing(struct connectdata *conn, bool *dophase_done)
 
   if(result)
     DEBUGF(infof(conn->data, "DO phase failed\n"));
-  else {
-    if(*dophase_done) {
-      result = smtp_dophase_done(conn, FALSE /* not connected */);
+  else if(*dophase_done) {
+    result = smtp_dophase_done(conn, FALSE /* not connected */);
 
-      DEBUGF(infof(conn->data, "DO phase is complete\n"));
-    }
+    DEBUGF(infof(conn->data, "DO phase is complete\n"));
   }
 
   return result;
@@ -1595,20 +1593,18 @@ static CURLcode smtp_regular_transfer(struct connectdata *conn,
   /* Make sure size is unknown at this point */
   data->req.size = -1;
 
+  /* Set the progress data */
   Curl_pgrsSetUploadCounter(data, 0);
   Curl_pgrsSetDownloadCounter(data, 0);
   Curl_pgrsSetUploadSize(data, 0);
   Curl_pgrsSetDownloadSize(data, 0);
 
+  /* Carry out the perform */
   result = smtp_perform(conn, &connected, dophase_done);
 
-  if(!result) {
-    if(!*dophase_done)
-      /* The DO phase has not completed yet */
-      return CURLE_OK;
-
+  /* Perform post DO phase operations if necessary */
+  if(!result && *dophase_done)
     result = smtp_dophase_done(conn, connected);
-  }
 
   return result;
 }

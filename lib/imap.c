@@ -415,9 +415,12 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
       case IMAP_CUSTOM:
         /* When dealing with a custom command, we are interested in all
            intermediate responses which match the parameter name. The
-           exceptions are SELECT and EXAMINE commands, for which no
-           filtering is (or can be easily) done. */
+           exceptions are STORE, which returns untagged responses as FETCH,
+           and SELECT and EXAMINE commands, for which no filtering is (or can
+           be easily) done. */
         if(!imap_matchresp(line, len, imap->custom) &&
+           (strcmp(imap->custom, "STORE") ||
+            !imap_matchresp(line, len, "FETCH")) &&
            strcmp(imap->custom, "SELECT") &&
            strcmp(imap->custom, "EXAMINE"))
           return FALSE;
@@ -2191,12 +2194,10 @@ static CURLcode imap_doing(struct connectdata *conn, bool *dophase_done)
 
   if(result)
     DEBUGF(infof(conn->data, "DO phase failed\n"));
-  else {
-    if(*dophase_done) {
-      result = imap_dophase_done(conn, FALSE /* not connected */);
+  else if(*dophase_done) {
+    result = imap_dophase_done(conn, FALSE /* not connected */);
 
-      DEBUGF(infof(conn->data, "DO phase is complete\n"));
-    }
+    DEBUGF(infof(conn->data, "DO phase is complete\n"));
   }
 
   return result;
@@ -2221,20 +2222,18 @@ static CURLcode imap_regular_transfer(struct connectdata *conn,
   /* Make sure size is unknown at this point */
   data->req.size = -1;
 
+  /* Set the progress data */
   Curl_pgrsSetUploadCounter(data, 0);
   Curl_pgrsSetDownloadCounter(data, 0);
   Curl_pgrsSetUploadSize(data, 0);
   Curl_pgrsSetDownloadSize(data, 0);
 
+  /* Carry out the perform */
   result = imap_perform(conn, &connected, dophase_done);
 
-  if(!result) {
-    if(!*dophase_done)
-      /* The DO phase has not completed yet */
-      return CURLE_OK;
-
+  /* Perform post DO phase operations if necessary */
+  if(!result && *dophase_done)
     result = imap_dophase_done(conn, connected);
-  }
 
   return result;
 }
