@@ -1272,16 +1272,17 @@ static CURLcode pop3_block_statemach(struct connectdata *conn)
    required */
 static CURLcode pop3_init(struct connectdata *conn)
 {
+  CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
   struct POP3 *pop3 = data->state.proto.pop3;
 
   if(!pop3) {
     pop3 = data->state.proto.pop3 = calloc(sizeof(struct POP3), 1);
     if(!pop3)
-      return CURLE_OUT_OF_MEMORY;
+      result = CURLE_OUT_OF_MEMORY;
   }
 
-  return CURLE_OK;
+  return result;
 }
 
 /* For the POP3 "protocol connect" and "doing" phases only */
@@ -1461,22 +1462,17 @@ static CURLcode pop3_do(struct connectdata *conn, bool *done)
  *
  * pop3_quit()
  *
- * This should be called before calling sclose().  We should then wait for the
- * response from the server before returning. The calling code should then try
- * to close the connection.
+ * Performs the quit action prior to sclose() be called.
  */
 static CURLcode pop3_quit(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
 
   /* Send the QUIT command */
-  result = Curl_pp_sendf(&conn->proto.pop3c.pp, "QUIT", NULL);
-  if(result)
-    return result;
+  result = Curl_pp_sendf(&conn->proto.pop3c.pp, "QUIT");
 
-  state(conn, POP3_QUIT);
-
-  result = pop3_block_statemach(conn);
+  if(!result)
+    state(conn, POP3_QUIT);
 
   return result;
 }
@@ -1500,7 +1496,8 @@ static CURLcode pop3_disconnect(struct connectdata *conn,
   /* The POP3 session may or may not have been allocated/setup at this
      point! */
   if(!dead_connection && pop3c->pp.conn)
-    (void)pop3_quit(conn); /* ignore errors on QUIT */
+    if(!pop3_quit(conn))
+      (void)pop3_block_statemach(conn); /* ignore errors on QUIT */
 
   /* Disconnect from the server */
   Curl_pp_disconnect(&pop3c->pp);

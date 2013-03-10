@@ -1264,16 +1264,17 @@ static CURLcode smtp_block_statemach(struct connectdata *conn)
    required */
 static CURLcode smtp_init(struct connectdata *conn)
 {
+  CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
   struct SMTP *smtp = data->state.proto.smtp;
 
   if(!smtp) {
     smtp = data->state.proto.smtp = calloc(sizeof(struct SMTP), 1);
     if(!smtp)
-      return CURLE_OUT_OF_MEMORY;
+      result = CURLE_OUT_OF_MEMORY;
   }
 
-  return CURLE_OK;
+  return result;
 }
 
 /* For the SMTP "protocol connect" and "doing" phases only */
@@ -1491,9 +1492,7 @@ static CURLcode smtp_do(struct connectdata *conn, bool *done)
  *
  * smtp_quit()
  *
- * This should be called before calling sclose().  We should then wait for the
- * response from the server before returning. The calling code should then try
- * to close the connection.
+ * Performs the quit action prior to sclose() being called.
  */
 static CURLcode smtp_quit(struct connectdata *conn)
 {
@@ -1501,12 +1500,9 @@ static CURLcode smtp_quit(struct connectdata *conn)
 
   /* Send the QUIT command */
   result = Curl_pp_sendf(&conn->proto.smtpc.pp, "QUIT");
-  if(result)
-    return result;
 
-  state(conn, SMTP_QUIT);
-
-  result = smtp_block_statemach(conn);
+  if(!result)
+    state(conn, SMTP_QUIT);
 
   return result;
 }
@@ -1530,7 +1526,8 @@ static CURLcode smtp_disconnect(struct connectdata *conn,
   /* The SMTP session may or may not have been allocated/setup at this
      point! */
   if(!dead_connection && smtpc->pp.conn)
-    (void)smtp_quit(conn); /* ignore errors on QUIT */
+    if(!smtp_quit(conn))
+      (void)smtp_block_statemach(conn); /* ignore errors on QUIT */
 
   /* Disconnect from the server */
   Curl_pp_disconnect(&smtpc->pp);
