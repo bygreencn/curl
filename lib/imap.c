@@ -236,10 +236,12 @@ static CURLcode imap_sendf(struct connectdata *conn, const char *fmt, ...)
   snprintf(imapc->resptag, sizeof(imapc->resptag), "%c%03d",
            'A' + (conn->connection_id % 26), imapc->cmdid);
 
+  /* Prefix the format with the tag */
   taggedfmt = aprintf("%s %s", imapc->resptag, fmt);
   if(!taggedfmt)
     return CURLE_OUT_OF_MEMORY;
 
+  /* Send the data with the tag */
   result = Curl_pp_vsendf(&imapc->pp, taggedfmt, ap);
 
   Curl_safefree(taggedfmt);
@@ -324,10 +326,16 @@ static char *imap_atom(const char *str)
   return newstr;
 }
 
-/* Determines whether the untagged response is related to a specified
-   command by checking if it is in format "* <command-name> ..." or
-   "* <number> <command-name> ...". The "* " marker is assumed to have
-   already been checked by the caller. */
+/***********************************************************************
+ *
+ * imap_matchresp()
+ *
+ * Determines whether the untagged response is related to the specified
+ * command by checking if it is in format "* <command-name> ..." or
+ * "* <number> <command-name> ...".
+ *
+ * The "* " marker is assumed to have already been checked by the caller.
+ */
 static bool imap_matchresp(const char *line, size_t len, const char *cmd)
 {
   const char *end = line + len;
@@ -359,8 +367,13 @@ static bool imap_matchresp(const char *line, size_t len, const char *cmd)
   return FALSE;
 }
 
-/* Function that checks whether the given string is a valid tagged, untagged
-   or continuation response which can be processed by the response handler. */
+/***********************************************************************
+ *
+ * imap_endofresp()
+ *
+ * Checks whether the given string is a valid tagged, untagged or continuation
+ * response which can be processed by the response handler.
+ */
 static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
                            int *resp)
 {
@@ -456,7 +469,12 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
   return FALSE; /* Nothing for us */
 }
 
-/* This is the ONLY way to change IMAP state! */
+/***********************************************************************
+ *
+ * state()
+ *
+ * This is the ONLY way to change IMAP state!
+ */
 static void state(struct connectdata *conn, imapstate newstate)
 {
   struct imap_conn *imapc = &conn->proto.imapc;
