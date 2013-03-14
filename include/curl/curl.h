@@ -507,6 +507,8 @@ typedef enum {
   CURLE_RTSP_SESSION_ERROR,      /* 86 - mismatch of RTSP Session Ids */
   CURLE_FTP_BAD_FILE_LIST,       /* 87 - unable to parse FTP file list */
   CURLE_CHUNK_FAILED,            /* 88 - chunk callback reported error */
+  CURLE_NO_CONNECTION_AVAILABLE, /* 89 - No connection available, the
+                                    session will be queued */
   CURL_LAST /* never use! */
 } CURLcode;
 
@@ -2015,6 +2017,7 @@ typedef enum {
 #define CURL_GLOBAL_ALL (CURL_GLOBAL_SSL|CURL_GLOBAL_WIN32)
 #define CURL_GLOBAL_NOTHING 0
 #define CURL_GLOBAL_DEFAULT CURL_GLOBAL_ALL
+#define CURL_GLOBAL_ACK_EINTR (1<<2)
 
 
 /*****************************************************************************
