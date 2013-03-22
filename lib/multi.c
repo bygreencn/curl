@@ -213,16 +213,16 @@ static void sh_freeentry(void *freethis)
     free(p);
 }
 
-static size_t fd_key_compare(void*k1, size_t k1_len, void*k2, size_t k2_len)
+static size_t fd_key_compare(void *k1, size_t k1_len, void *k2, size_t k2_len)
 {
   (void) k1_len; (void) k2_len;
 
-  return (*((int* ) k1)) == (*((int* ) k2));
+  return (*((int *) k1)) == (*((int *) k2));
 }
 
-static size_t hash_fd(void* key, size_t key_length, size_t slots_num)
+static size_t hash_fd(void *key, size_t key_length, size_t slots_num)
 {
-  int fd = * ((int* ) key);
+  int fd = *((int *) key);
   (void) key_length;
 
   return (fd % (int)slots_num);
@@ -634,9 +634,9 @@ CURLMcode curl_multi_remove_handle(CURLM *multi_handle,
     return CURLM_BAD_EASY_HANDLE; /* twasn't found */
 }
 
-bool Curl_multi_pipeline_enabled(const struct Curl_multi* multi)
+bool Curl_multi_pipeline_enabled(const struct Curl_multi *multi)
 {
-  return multi && multi->pipelining_enabled;
+  return (multi && multi->pipelining_enabled) ? TRUE : FALSE;
 }
 
 void Curl_multi_handlePipeBreak(struct SessionHandle *data)
@@ -1017,7 +1017,7 @@ static CURLMcode multi_runsingle(struct Curl_multi *multi,
         /* There was no connection available. We will go to the pending
            state and wait for an available connection. */
         multistate(easy, CURLM_STATE_CONNECT_PEND);
-        easy->result = CURLM_OK;
+        easy->result = CURLE_OK;
         break;
       }
 
