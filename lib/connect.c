@@ -87,11 +87,21 @@
 
 static bool verifyconnect(curl_socket_t sockfd, int *error);
 
-#ifdef __DragonFly__
-/* DragonFlyBSD uses millisecond as KEEPIDLE and KEEPINTVL units */
+#if defined(__DragonFly__) || defined(HAVE_WINSOCK_H)
+/* DragonFlyBSD and Windows use millisecond units */
 #define KEEPALIVE_FACTOR(x) (x *= 1000)
 #else
 #define KEEPALIVE_FACTOR(x)
+#endif
+
+#if defined(HAVE_WINSOCK_H) && !defined(SIO_KEEPALIVE_VALS)
+#define SIO_KEEPALIVE_VALS    _WSAIOW(IOC_VENDOR,4)
+
+struct tcp_keepalive {
+  u_long onoff;
+  u_long keepalivetime;
+  u_long keepaliveinterval;
+};
 #endif
 
 static void
@@ -106,6 +116,22 @@ tcpkeepalive(struct SessionHandle *data,
     infof(data, "Failed to set SO_KEEPALIVE on fd %d\n", sockfd);
   }
   else {
+#if defined(SIO_KEEPALIVE_VALS)
+    struct tcp_keepalive vals;
+    DWORD dummy;
+    vals.onoff = 1;
+    optval = curlx_sltosi(data->set.tcp_keepidle);
+    KEEPALIVE_FACTOR(optval);
+    vals.keepalivetime = optval;
+    optval = curlx_sltosi(data->set.tcp_keepintvl);
+    KEEPALIVE_FACTOR(optval);
+    vals.keepaliveinterval = optval;
+    if(WSAIoctl(sockfd, SIO_KEEPALIVE_VALS, (LPVOID) &vals, sizeof(vals),
+                NULL, 0, &dummy, NULL, NULL) != 0) {
+      infof(data, "Failed to set SIO_KEEPALIVE_VALS on fd %d: %d\n",
+            (int)sockfd, WSAGetLastError());
+    }
+#else
 #ifdef TCP_KEEPIDLE
     optval = curlx_sltosi(data->set.tcp_keepidle);
     KEEPALIVE_FACTOR(optval);
@@ -121,6 +147,7 @@ tcpkeepalive(struct SessionHandle *data,
           (void *)&optval, sizeof(optval)) < 0) {
       infof(data, "Failed to set TCP_KEEPINTVL on fd %d\n", sockfd);
     }
+#endif
 #endif
   }
 }
@@ -825,12 +852,34 @@ static void nosigpipe(struct connectdata *conn,
    Work-around: Make the Socket Send Buffer Size Larger Than the Program Send
    Buffer Size
 
+   The problem described in this knowledge-base is applied only to pre-Vista
+   Windows.  Following function trying to detect OS version and skips
+   SO_SNDBUF adjustment for Windows Vista and above.
 */
+#define DETECT_OS_NONE 0
+#define DETECT_OS_PREVISTA 1
+#define DETECT_OS_VISTA_OR_LATER 2
+
 void Curl_sndbufset(curl_socket_t sockfd)
 {
   int val = CURL_MAX_WRITE_SIZE + 32;
   int curval = 0;
   int curlen = sizeof(curval);
+
+  OSVERSIONINFO osver;
+  static int detectOsState = DETECT_OS_NONE;
+
+  if(detectOsState == DETECT_OS_NONE) {
+    memset(&osver, 0, sizeof(osver));
+    osver.dwOSVersionInfoSize = sizeof(osver);
+    detectOsState = DETECT_OS_PREVISTA;
+    if(GetVersionEx(&osver)) {
+      if(osver.dwMajorVersion >= 6)
+        detectOsState = DETECT_OS_VISTA_OR_LATER;
+    }
+  }
+  if(detectOsState == DETECT_OS_VISTA_OR_LATER)
+    return;
 
   if(getsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (char *)&curval, &curlen) == 0)
     if(curval > val)
