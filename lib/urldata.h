@@ -1138,9 +1138,6 @@ typedef enum {
 #define MAX_CURL_USER_LENGTH 256
 #define MAX_CURL_PASSWORD_LENGTH 256
 #define MAX_CURL_OPTIONS_LENGTH 256
-#define MAX_CURL_USER_LENGTH_TXT "255"
-#define MAX_CURL_PASSWORD_LENGTH_TXT "255"
-#define MAX_CURL_OPTIONS_LENGTH_TXT "255"
 
 struct auth {
   unsigned long want;  /* Bitmask set to the authentication methods wanted by
@@ -1355,6 +1352,7 @@ enum dupstring {
   STRING_SSL_ISSUERCERT,  /* issuer cert file to check certificate */
   STRING_USERNAME,        /* <username>, if used */
   STRING_PASSWORD,        /* <password>, if used */
+  STRING_OPTIONS,         /* <options>, if used */
   STRING_PROXYUSERNAME,   /* Proxy <username>, if used */
   STRING_PROXYPASSWORD,   /* Proxy <password>, if used */
   STRING_NOPROXY,         /* List of hosts which should not use the proxy, if
