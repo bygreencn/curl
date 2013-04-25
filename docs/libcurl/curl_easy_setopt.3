@@ -620,12 +620,20 @@ scheme://host:port/path
 
 For a greater explanation of the format please see RFC3986.
 
-If the given URL lacks the scheme, or protocol, part ("http://" or "ftp://"
-etc), libcurl will attempt to resolve which protocol to use based on the
-given host mame. If the protocol is not supported, libcurl will return
-(\fICURLE_UNSUPPORTED_PROTOCOL\fP) when you call \fIcurl_easy_perform(3)\fP
-or \fIcurl_multi_perform(3)\fP. Use \fIcurl_version_info(3)\fP for detailed
-information on which protocols are supported.
+If the given URL lacks the scheme (such as "http://" or "ftp://" etc) then
+libcurl will attempt to resolve the protocol based on one of the following
+given host names:
+
+HTTP, FTP, DICT, LDAP, IMAP, POP3 or SMTP
+
+(POP3 and SMTP added in 7.30.1)
+
+Should the protocol, either that specified by the scheme or deduced by libcurl
+from the host name, not be supported by libcurl then
+(\fICURLE_UNSUPPORTED_PROTOCOL\fP) will be returned from either the
+\fIcurl_easy_perform(3)\fP or \fIcurl_multi_perform(3)\fP functions when you
+call them. Use \fIcurl_version_info(3)\fP for detailed information of which
+protocols are supported by the build of libcurl you are using.
 
 The host part of the URL contains the address of the server that you want to
 connect to. This can be the fully qualified domain name of the server, the
@@ -655,8 +663,8 @@ pop3://user:password;options@mail.example.com
 smtp://user:password;options@mail.example.com
 
 At present only IMAP, POP3 and SMTP support login options as part of the host.
-For more information about the login options in URL syntax please see RFC2384
-and RFC5092 (Added in 7.30.1).
+For more information about the login options in URL syntax please see RFC2384,
+RFC5092 and IETF draft draft-earhart-url-smtp-00.txt (Added in 7.30.1).
 
 The port is optional and when not specified libcurl will use the default port
 based on the determined or specified protocol: 80 for HTTP, 21 for FTP and 25
@@ -1062,8 +1070,8 @@ other hosts it will not send the user and password to those. This is enforced
 to prevent accidental information leakage.
 
 At present only IMAP, POP3 and SMTP support login options as part of the
-details string. For more information about the login options please see RFC2384
-and RFC5092 (Added in 7.30.1).
+details string. For more information about the login options please see
+RFC2384, RFC5092 and IETF draft draft-earhart-url-smtp-00.txt (Added in 7.30.1).
 
 Use \fICURLOPT_HTTPAUTH\fP to specify the authentication method for HTTP based
 connections.
@@ -1148,7 +1156,7 @@ Microsoft. It uses a challenge-response and hash concept similar to Digest, to
 prevent the password from being eavesdropped.
 
 You need to build libcurl with either OpenSSL, GnuTLS or NSS support for this
-option to work, or build libcurl on Windows.
+option to work, or build libcurl on Windows with SSPI support.
 .IP CURLAUTH_NTLM_WB
 NTLM delegating to winbind helper. Authentication is performed by a separate
 binary application that is executed when needed. The name of the application
