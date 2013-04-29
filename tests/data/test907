@@ -2,7 +2,8 @@
 <info>
 <keywords>
 SMTP
-SMTP AUTH LOGIN
+SMTP AUTH PLAIN SASL-IR
+RFC4616
 RFC4954
 </keywords>
 </info>
@@ -11,10 +12,8 @@ RFC4954
 # Server-side
 <reply>
 <servercmd>
-REPLY EHLO 250 AUTH LOGIN
-REPLY AUTH 334 LOGIN supported
-REPLY dGVzdA== 334 UGFzc3dvcmQ6
-REPLY MTIzNA== 235 Authenticated
+REPLY EHLO 250 AUTH PLAIN
+REPLY AUTH 235 Authenticated
 </servercmd>
 </reply>
 
@@ -25,13 +24,13 @@ REPLY MTIzNA== 235 Authenticated
 smtp
 </server>
  <name>
-SMTP login authentication
+SMTP plain authentication with initial response
  </name>
 <stdin>
 mail body
 </stdin>
  <command>
-smtp://%HOSTIP:%SMTPPORT/user --mail-rcpt 904@foo --mail-from 904@from -u test:1234 -T -
+smtp://%HOSTIP:%SMTPPORT/user --mail-rcpt 907@foo --mail-from 907@from -u test:1234 --sasl-ir -T -
 </command>
 </client>
 
@@ -40,11 +39,9 @@ smtp://%HOSTIP:%SMTPPORT/user --mail-rcpt 904@foo --mail-from 904@from -u test:1
 <verify>
 <protocol>
 EHLO user
-AUTH LOGIN
-dGVzdA==
-MTIzNA==
-MAIL FROM:<904@from>
-RCPT TO:<904@foo>
+AUTH PLAIN dGVzdAB0ZXN0ADEyMzQ=
+MAIL FROM:<907@from>
+RCPT TO:<907@foo>
 DATA
 QUIT
 </protocol>
