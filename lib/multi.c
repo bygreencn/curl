@@ -76,6 +76,8 @@ static bool isHandleAtHead(struct SessionHandle *handle,
 static CURLMcode add_next_timeout(struct timeval now,
                                   struct Curl_multi *multi,
                                   struct SessionHandle *d);
+static CURLMcode multi_timeout(struct Curl_multi *multi,
+                               long *timeout_ms);
 
 #ifdef DEBUGBUILD
 static const char * const statename[]={
@@ -810,9 +812,17 @@ CURLMcode curl_multi_wait(CURLM *multi_handle,
   unsigned int nfds = 0;
   unsigned int curlfds;
   struct pollfd *ufds = NULL;
+  long timeout_internal;
 
   if(!GOOD_MULTI_HANDLE(multi))
     return CURLM_BAD_HANDLE;
+
+  /* If the internally desired timeout is actually shorter than requested from
+     the outside, then use the shorter time! But only if the internal timer
+     is actually larger than 0! */
+  (void)multi_timeout(multi, &timeout_internal);
+  if((timeout_internal > 0) && (timeout_internal < (long)timeout_ms))
+    timeout_ms = (int)timeout_internal;
 
   /* Count up how many fds we have from the multi handle */
   easy=multi->easy.next;
@@ -1529,14 +1539,15 @@ static CURLMcode multi_runsingle(struct Curl_multi *multi,
           else
             follow = FOLLOW_RETRY;
           easy->result = Curl_done(&easy->easy_conn, CURLE_OK, FALSE);
-          if(easy->result == CURLE_OK)
-            easy->result = Curl_follow(data, newurl, follow);
           if(CURLE_OK == easy->result) {
-            multistate(easy, CURLM_STATE_CONNECT);
-            result = CURLM_CALL_MULTI_PERFORM;
-            newurl = NULL; /* handed over the memory ownership to
-                              Curl_follow(), make sure we don't free() it
-                              here */
+            easy->result = Curl_follow(data, newurl, follow);
+            if(CURLE_OK == easy->result) {
+              multistate(easy, CURLM_STATE_CONNECT);
+              result = CURLM_CALL_MULTI_PERFORM;
+              newurl = NULL; /* handed over the memory ownership to
+                                Curl_follow(), make sure we don't free() it
+                                here */
+            }
           }
         }
         else {
