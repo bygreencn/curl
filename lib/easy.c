@@ -50,6 +50,11 @@
 #include <sys/param.h>
 #endif
 
+#if defined(HAVE_SIGNAL_H) && defined(HAVE_SIGACTION) && defined(USE_OPENSSL)
+#define SIGPIPE_IGNORE 1
+#include <signal.h>
+#endif
+
 #include "strequal.h"
 #include "urldata.h"
 #include <curl/curl.h>
@@ -69,7 +74,6 @@
 #include "connect.h" /* for Curl_getconnectinfo */
 #include "slist.h"
 #include "amigaos.h"
-#include "curl_rand.h"
 #include "non-ascii.h"
 #include "warnless.h"
 #include "conncache.h"
@@ -80,6 +84,55 @@
 
 /* The last #include file should be: */
 #include "memdebug.h"
+
+#ifdef SIGPIPE_IGNORE
+struct sigpipe_ignore {
+  struct sigaction pipe;
+  bool no_signal;
+};
+
+#define SIGPIPE_VARIABLE(x) struct sigpipe_ignore x
+
+/*
+ * sigpipe_ignore() makes sure we ignore SIGPIPE while running libcurl
+ * internals, and then sigpipe_restore() will restore the situation when we
+ * return from libcurl again.
+ */
+static void sigpipe_ignore(struct SessionHandle *data,
+                           struct sigpipe_ignore *ig)
+{
+  /* get a local copy of no_signal because the SessionHandle might not be
+     around when we restore */
+  ig->no_signal = data->set.no_signal;
+  if(!data->set.no_signal) {
+    struct sigaction action;
+    /* first, extract the existing situation */
+    sigaction(SIGPIPE, NULL, &ig->pipe);
+    action = ig->pipe;
+    /* ignore this signal */
+    action.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &action, NULL);
+  }
+}
+
+/*
+ * sigpipe_restore() puts back the outside world's opinion of signal handler
+ * and SIGPIPE handling. It MUST only be called after a corresponding
+ * sigpipe_ignore() was used.
+ */
+static void sigpipe_restore(struct sigpipe_ignore *ig)
+{
+  if(!ig->no_signal)
+    /* restore the outside state */
+    sigaction(SIGPIPE, &ig->pipe, NULL);
+}
+
+#else
+/* for systems without sigaction */
+#define sigpipe_ignore(x,y)
+#define sigpipe_restore(x)
+#define SIGPIPE_VARIABLE(x)
+#endif
 
 /* win32_cleanup() is for win32 socket cleanup functionality, the opposite
    of win32_init() */
@@ -276,10 +329,6 @@ CURLcode curl_global_init(long flags)
 
   init_flags  = flags;
 
-  /* Preset pseudo-random number sequence. */
-
-  Curl_srand();
-
   return CURLE_OK;
 }
 
@@ -423,6 +472,7 @@ CURLcode curl_easy_perform(CURL *easy)
   int without_fds = 0;  /* count number of consecutive returns from
                            curl_multi_wait() without any filedescriptors */
   struct timeval before;
+  SIGPIPE_VARIABLE(pipe);
 
   if(!easy)
     return CURLE_BAD_FUNCTION_ARGUMENT;
@@ -454,6 +504,8 @@ CURLcode curl_easy_perform(CURL *easy)
     else
       return CURLE_FAILED_INIT;
   }
+
+  sigpipe_ignore(data, &pipe);
 
   /* assign this after curl_multi_add_handle() since that function checks for
      it and rejects this handle otherwise */
@@ -511,6 +563,8 @@ CURLcode curl_easy_perform(CURL *easy)
      a failure here, room for future improvement! */
   (void)curl_multi_remove_handle(multi, easy);
 
+  sigpipe_restore(&pipe);
+
   /* The multi handle is kept alive, owned by the easy handle */
   return code;
 }
@@ -522,11 +576,14 @@ CURLcode curl_easy_perform(CURL *easy)
 void curl_easy_cleanup(CURL *curl)
 {
   struct SessionHandle *data = (struct SessionHandle *)curl;
+  SIGPIPE_VARIABLE(pipe);
 
   if(!data)
     return;
 
+  sigpipe_ignore(data, &pipe);
   Curl_close(data);
+  sigpipe_restore(&pipe);
 }
 
 /*
