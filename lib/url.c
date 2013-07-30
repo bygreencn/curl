@@ -1609,8 +1609,20 @@ CURLcode Curl_setopt(struct SessionHandle *data, CURLoption option,
       data->progress.callback = TRUE; /* no longer internal */
     else
       data->progress.callback = FALSE; /* NULL enforces internal */
+    break;
+
+  case CURLOPT_XFERINFOFUNCTION:
+    /*
+     * Transfer info callback function
+     */
+    data->set.fxferinfo = va_arg(param, curl_xferinfo_callback);
+    if(data->set.fxferinfo)
+      data->progress.callback = TRUE; /* no longer internal */
+    else
+      data->progress.callback = FALSE; /* NULL enforces internal */
 
     break;
+
   case CURLOPT_PROGRESSDATA:
     /*
      * Custom client data to pass to the progress callback
@@ -1900,6 +1912,8 @@ CURLcode Curl_setopt(struct SessionHandle *data, CURLoption option,
      */
     data->set.ssl.fsslctxp = va_arg(param, void *);
     break;
+#endif
+#if defined(USE_SSLEAY) || defined(USE_QSOSSL) || defined(USE_GSKIT)
   case CURLOPT_CERTINFO:
     data->set.ssl.certinfo = (0 != va_arg(param, long))?TRUE:FALSE;
     break;
@@ -2560,7 +2574,7 @@ CURLcode Curl_disconnect(struct connectdata *conn, bool dead_connection)
     conn->handler->disconnect(conn, dead_connection);
 
     /* unlink ourselves! */
-  infof(data, "Closing connection %d\n", conn->connection_id);
+  infof(data, "Closing connection %ld\n", conn->connection_id);
   Curl_conncache_remove_conn(data->state.conn_cache, conn);
 
 #if defined(USE_LIBIDN)
@@ -2861,7 +2875,8 @@ ConnectionExists(struct SessionHandle *data,
     size_t best_pipe_len = max_pipe_len;
     struct curl_llist_element *curr;
 
-    infof(data, "Found bundle for host %s: %p\n", needle->host.name, bundle);
+    infof(data, "Found bundle for host %s: %p\n",
+          needle->host.name, (void *)bundle);
 
     /* We can't pipe if we don't know anything about the server */
     if(canPipeline && !bundle->server_supports_pipelining) {
@@ -2897,7 +2912,7 @@ ConnectionExists(struct SessionHandle *data,
 
         if(dead) {
           check->data = data;
-          infof(data, "Connection %d seems to be dead!\n",
+          infof(data, "Connection %ld seems to be dead!\n",
                 check->connection_id);
 
           /* disconnect resources */
@@ -3885,15 +3900,20 @@ static CURLcode parseurlandfillconn(struct SessionHandle *data,
                                    the original */
     size_t urllen = strlen(data->change.url); /* original URL length */
 
+    size_t prefixlen = strlen(conn->host.name);
+
+    if(!*prot_missing)
+      prefixlen += strlen(protop) + strlen("://");
+
     reurl = malloc(urllen + 2); /* 2 for zerobyte + slash */
     if(!reurl)
       return CURLE_OUT_OF_MEMORY;
 
     /* copy the prefix */
-    memcpy(reurl, data->change.url, urllen - (plen-1));
+    memcpy(reurl, data->change.url, prefixlen);
 
     /* append the trailing piece + zerobyte */
-    memcpy(&reurl[urllen - (plen-1)], path, plen + 1);
+    memcpy(&reurl[prefixlen], path, plen + 1);
 
     /* possible free the old one */
     if(data->change.url_alloc) {
@@ -4440,8 +4460,12 @@ static CURLcode parse_url_login(struct SessionHandle *data,
 
           /* Decode the user */
           newname = curl_easy_unescape(data, userp, 0, NULL);
-          if(!newname)
+          if(!newname) {
+            Curl_safefree(userp);
+            Curl_safefree(passwdp);
+            Curl_safefree(optionsp);
             return CURLE_OUT_OF_MEMORY;
+          }
 
           if(strlen(newname) < MAX_CURL_USER_LENGTH)
             strcpy(user, newname);
@@ -4452,8 +4476,12 @@ static CURLcode parse_url_login(struct SessionHandle *data,
         if(passwdp) {
           /* We have a password in the URL so decode it */
           char *newpasswd = curl_easy_unescape(data, passwdp, 0, NULL);
-          if(!newpasswd)
+          if(!newpasswd) {
+            Curl_safefree(userp);
+            Curl_safefree(passwdp);
+            Curl_safefree(optionsp);
             return CURLE_OUT_OF_MEMORY;
+          }
 
           if(strlen(newpasswd) < MAX_CURL_PASSWORD_LENGTH)
             strcpy(passwd, newpasswd);
@@ -4464,8 +4492,12 @@ static CURLcode parse_url_login(struct SessionHandle *data,
         if(optionsp) {
           /* We have an options list in the URL so decode it */
           char *newoptions = curl_easy_unescape(data, optionsp, 0, NULL);
-          if(!newoptions)
+          if(!newoptions) {
+            Curl_safefree(userp);
+            Curl_safefree(passwdp);
+            Curl_safefree(optionsp);
             return CURLE_OUT_OF_MEMORY;
+          }
 
           if(strlen(newoptions) < MAX_CURL_OPTIONS_LENGTH)
             strcpy(options, newoptions);
@@ -5304,7 +5336,7 @@ static CURLcode create_conn(struct SessionHandle *data,
   if(reuse && !force_reuse && IsPipeliningPossible(data, conn_temp)) {
     size_t pipelen = conn_temp->send_pipe->size + conn_temp->recv_pipe->size;
     if(pipelen > 0) {
-      infof(data, "Found connection %d, with requests in the pipe (%d)\n",
+      infof(data, "Found connection %ld, with requests in the pipe (%zu)\n",
             conn_temp->connection_id, pipelen);
 
       if(conn_temp->bundle->num_connections < max_host_connections &&

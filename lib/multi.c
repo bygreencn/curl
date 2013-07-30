@@ -131,7 +131,7 @@ static void mstate(struct Curl_one_easy *easy, CURLMstate state
     infof(easy->easy_handle,
           "STATE: %s => %s handle %p; line %d (connection #%ld) \n",
           statename[oldstate], statename[easy->state],
-          (char *)easy, lineno, connection_id);
+          (void *)easy, lineno, connection_id);
   }
 #endif
   if(state == CURLM_STATE_COMPLETED)
@@ -904,9 +904,30 @@ CURLMcode curl_multi_wait(CURLM *multi_handle,
     ++nfds;
   }
 
-  if(nfds)
+  if(nfds) {
     /* wait... */
     i = Curl_poll(ufds, nfds, timeout_ms);
+
+    if(i) {
+      unsigned int j;
+      /* copy revents results from the poll to the curl_multi_wait poll
+         struct, the bit values of the actual underlying poll() implementation
+         may not be the same as the ones in the public libcurl API! */
+      for(j = 0; j < extra_nfds; j++) {
+        unsigned short mask = 0;
+        unsigned r = ufds[curlfds + j].revents;
+
+        if(r & POLLIN)
+          mask |= CURL_WAIT_POLLIN;
+        if(r & POLLOUT)
+          mask |= CURL_WAIT_POLLOUT;
+        if(r & POLLPRI)
+          mask |= CURL_WAIT_POLLPRI;
+
+        extra_fds[j].revents = mask;
+      }
+    }
+  }
   else
     i = 0;
 
@@ -945,7 +966,7 @@ static CURLMcode multi_runsingle(struct Curl_multi *multi,
        we're using gets cleaned up and we're left with nothing. */
     if(data->state.pipe_broke) {
       infof(data, "Pipe broke: handle 0x%p, url = %s\n",
-            easy, data->state.path);
+            (void *)easy, data->state.path);
 
       if(easy->state < CURLM_STATE_COMPLETED) {
         /* Head back to the CONNECT state */
@@ -1210,12 +1231,12 @@ static CURLMcode multi_runsingle(struct Curl_multi *multi,
     case CURLM_STATE_WAITDO:
       /* Wait for our turn to DO when we're pipelining requests */
 #ifdef DEBUGBUILD
-      infof(data, "WAITDO: Conn %ld send pipe %zu inuse %d athead %d\n",
+      infof(data, "WAITDO: Conn %ld send pipe %zu inuse %s athead %s\n",
             easy->easy_conn->connection_id,
             easy->easy_conn->send_pipe->size,
-            easy->easy_conn->writechannel_inuse?1:0,
+            easy->easy_conn->writechannel_inuse?"TRUE":"FALSE",
             isHandleAtHead(data,
-                           easy->easy_conn->send_pipe)?1:0);
+                           easy->easy_conn->send_pipe)?"TRUE":"FALSE");
 #endif
       if(!easy->easy_conn->writechannel_inuse &&
          isHandleAtHead(data,
@@ -1402,12 +1423,12 @@ static CURLMcode multi_runsingle(struct Curl_multi *multi,
       }
 #ifdef DEBUGBUILD
       else {
-        infof(data, "WAITPERFORM: Conn %ld recv pipe %zu inuse %d athead %d\n",
+        infof(data, "WAITPERFORM: Conn %ld recv pipe %zu inuse %s athead %s\n",
               easy->easy_conn->connection_id,
               easy->easy_conn->recv_pipe->size,
-              easy->easy_conn->readchannel_inuse?1:0,
+              easy->easy_conn->readchannel_inuse?"TRUE":"FALSE",
               isHandleAtHead(data,
-                             easy->easy_conn->recv_pipe)?1:0);
+                             easy->easy_conn->recv_pipe)?"TRUE":"FALSE");
       }
 #endif
       break;

@@ -252,6 +252,9 @@ curl_free_callback Curl_cfree = (curl_free_callback)free;
 curl_realloc_callback Curl_crealloc = (curl_realloc_callback)realloc;
 curl_strdup_callback Curl_cstrdup = (curl_strdup_callback)system_strdup;
 curl_calloc_callback Curl_ccalloc = (curl_calloc_callback)calloc;
+#if defined(WIN32) && defined(UNICODE)
+curl_wcsdup_callback Curl_cwcsdup = (curl_wcsdup_callback)_wcsdup;
+#endif
 #else
 /*
  * Symbian OS doesn't support initialization to code in writeable static data.
@@ -283,6 +286,9 @@ CURLcode curl_global_init(long flags)
   Curl_crealloc = (curl_realloc_callback)realloc;
   Curl_cstrdup = (curl_strdup_callback)system_strdup;
   Curl_ccalloc = (curl_calloc_callback)calloc;
+#if defined(WIN32) && defined(UNICODE)
+  Curl_cwcsdup = (curl_wcsdup_callback)_wcsdup;
+#endif
 
   if(flags & CURL_GLOBAL_SSL)
     if(!Curl_ssl_init()) {
@@ -533,9 +539,7 @@ CURLcode curl_easy_perform(CURL *easy)
         if(curlx_tvdiff(after, before) <= 10) {
           without_fds++;
           if(without_fds > 2) {
-            int sleep_ms = without_fds * 50;
-            if(sleep_ms > 1000)
-              sleep_ms = 1000;
+            int sleep_ms = without_fds < 10 ? (1 << (without_fds-1)): 1000;
             Curl_wait_ms(sleep_ms);
           }
         }
@@ -612,12 +616,16 @@ CURLcode curl_easy_getinfo(CURL *curl, CURLINFO info, ...)
 {
   va_list arg;
   void *paramp;
+  CURLcode ret;
   struct SessionHandle *data = (struct SessionHandle *)curl;
 
   va_start(arg, info);
   paramp = va_arg(arg, void *);
 
-  return Curl_getinfo(data, info, paramp);
+  ret = Curl_getinfo(data, info, paramp);
+
+  va_end(arg);
+  return ret;
 }
 
 /*
@@ -845,6 +853,13 @@ CURLcode curl_easy_pause(CURL *curl, int action)
 
     free(freewrite); /* this is unconditionally no longer used */
   }
+
+  /* if there's no error and we're not pausing both directions, we want
+     to have this handle checked soon */
+  if(!result &&
+     ((newstate&(KEEP_RECV_PAUSE|KEEP_SEND_PAUSE)) !=
+      (KEEP_RECV_PAUSE|KEEP_SEND_PAUSE)) )
+    Curl_expire(data, 1); /* get this handle going again */
 
   return result;
 }

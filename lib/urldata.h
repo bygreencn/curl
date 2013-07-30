@@ -134,6 +134,10 @@
 #include <qsossl.h>
 #endif
 
+#ifdef USE_GSKIT
+#include <gskssl.h>
+#endif
+
 #ifdef USE_AXTLS
 #include <axTLS/ssl.h>
 #undef malloc
@@ -322,6 +326,11 @@ struct ssl_connect_data {
 #ifdef USE_QSOSSL
   SSLHandle *handle;
 #endif /* USE_QSOSSL */
+#ifdef USE_GSKIT
+  gsk_handle handle;
+  int iocport;
+  ssl_connect_state connecting_state;
+#endif
 #ifdef USE_AXTLS
   SSL_CTX* ssl_ctx;
   SSL*     ssl;
@@ -1419,7 +1428,8 @@ struct UserDefined {
   curl_read_callback fread_func;     /* function that reads the input */
   int is_fread_set; /* boolean, has read callback been set to non-NULL? */
   int is_fwrite_set; /* boolean, has write callback been set to non-NULL? */
-  curl_progress_callback fprogress;  /* function for progress information */
+  curl_progress_callback fprogress; /* OLD and deprecated progress callback  */
+  curl_xferinfo_callback fxferinfo; /* progress callback */
   curl_debug_callback fdebug;      /* function that write informational data */
   curl_ioctl_callback ioctl_func;  /* function for I/O control */
   curl_sockopt_callback fsockopt;  /* function for setting socket options */

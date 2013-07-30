@@ -31,6 +31,8 @@
    Curl_ossl_ - prefix for OpenSSL ones
    Curl_gtls_ - prefix for GnuTLS ones
    Curl_nss_ - prefix for NSS ones
+   Curl_qssl_ - prefix for QsoSSL ones
+   Curl_gskit_ - prefix for GSKit ones
    Curl_polarssl_ - prefix for PolarSSL ones
    Curl_cyassl_ - prefix for CyaSSL ones
    Curl_schannel_ - prefix for Schannel SSPI ones
@@ -62,11 +64,13 @@
 #include "gtls.h"   /* GnuTLS versions */
 #include "nssg.h"   /* NSS versions */
 #include "qssl.h"   /* QSOSSL versions */
+#include "gskit.h"  /* Global Secure ToolKit versions */
 #include "polarssl.h" /* PolarSSL versions */
 #include "axtls.h"  /* axTLS versions */
 #include "cyassl.h"  /* CyaSSL versions */
 #include "curl_schannel.h" /* Schannel SSPI version */
 #include "curl_darwinssl.h" /* SecureTransport (Darwin) version */
+#include "slist.h"
 #include "sendf.h"
 #include "rawstr.h"
 #include "url.h"
@@ -74,6 +78,10 @@
 #include "progress.h"
 #include "share.h"
 #include "timeval.h"
+
+#define _MPRINTF_REPLACE /* use our functions only */
+#include <curl/mprintf.h>
+
 /* The last #include file should be: */
 #include "memdebug.h"
 
@@ -187,44 +195,43 @@ unsigned int Curl_rand(struct SessionHandle *data)
 {
   unsigned int r;
   static unsigned int randseed;
-  static bool seeded;
+  static bool seeded = FALSE;
 
-#ifdef have_curlssl_random
-  if(!data) {
-#endif
-
-    if(!seeded) {
-
-#ifdef RANDOM_FILE
-      /* if there's a random file to read a seed from, use it */
-      int fd = open(RANDOM_FILE, O_RDONLY);
-      seeded = TRUE;
-      if(fd > -1) {
-        /* read random data into the randseed variable */
-        read(fd, &randseed, sizeof(randseed));
-        close(fd);
-      }
-      else
-#endif /* RANDOM_FILE */
-      {
-        struct timeval now = curlx_tvnow();
-        randseed += (unsigned int) now.tv_usec + (unsigned int)now.tv_sec;
-        Curl_rand(data);
-        Curl_rand(data);
-        Curl_rand(data);
-      }
-    }
-    /* Return an unsigned 32-bit pseudo-random number. */
-    r = randseed = randseed * 1103515245 + 12345;
-    return (r << 16) | ((r >> 16) & 0xFFFF);
-
-#ifdef have_curlssl_random
-  }
-  else {
+#ifndef have_curlssl_random
+  (void)data;
+#else
+  if(data) {
     Curl_ssl_random(data, (unsigned char *)&r, sizeof(r));
     return r;
   }
 #endif
+
+#ifdef RANDOM_FILE
+  if(!seeded) {
+    /* if there's a random file to read a seed from, use it */
+    int fd = open(RANDOM_FILE, O_RDONLY);
+    if(fd > -1) {
+      /* read random data into the randseed variable */
+      ssize_t nread = read(fd, &randseed, sizeof(randseed));
+      if(nread == sizeof(randseed))
+        seeded = TRUE;
+      close(fd);
+    }
+  }
+#endif
+
+  if(!seeded) {
+    struct timeval now = curlx_tvnow();
+    randseed += (unsigned int)now.tv_usec + (unsigned int)now.tv_sec;
+    randseed = randseed * 1103515245 + 12345;
+    randseed = randseed * 1103515245 + 12345;
+    randseed = randseed * 1103515245 + 12345;
+    seeded = TRUE;
+  }
+
+  /* Return an unsigned 32-bit pseudo-random number. */
+  r = randseed = randseed * 1103515245 + 12345;
+  return (r << 16) | ((r >> 16) & 0xFFFF);
 }
 
 #ifdef USE_SSL
@@ -584,6 +591,65 @@ void Curl_ssl_free_certinfo(struct SessionHandle *data)
     ci->certinfo = NULL;
     ci->num_of_certs = 0;
   }
+}
+
+int Curl_ssl_init_certinfo(struct SessionHandle * data,
+                           int num)
+{
+  struct curl_certinfo * ci = &data->info.certs;
+  struct curl_slist * * table;
+
+  /* Initialize the certificate information structures. Return 0 if OK, else 1.
+   */
+  Curl_ssl_free_certinfo(data);
+  ci->num_of_certs = num;
+  table = calloc((size_t) num, sizeof(struct curl_slist *));
+  if(!table)
+    return 1;
+
+  ci->certinfo = table;
+  return 0;
+}
+
+CURLcode Curl_ssl_push_certinfo_len(struct SessionHandle *data,
+                                    int certnum,
+                                    const char *label,
+                                    const char *value,
+                                    size_t valuelen)
+{
+  struct curl_certinfo * ci = &data->info.certs;
+  char * output;
+  struct curl_slist * nl;
+  CURLcode res = CURLE_OK;
+
+  /* Add an information record for a particular certificate. */
+  output = curl_maprintf("%s:%.*s", label, valuelen, value);
+  if(!output)
+    return CURLE_OUT_OF_MEMORY;
+
+  nl = Curl_slist_append_nodup(ci->certinfo[certnum], output);
+  if(!nl) {
+    free(output);
+    curl_slist_free_all(ci->certinfo[certnum]);
+    res = CURLE_OUT_OF_MEMORY;
+  }
+
+  ci->certinfo[certnum] = nl;
+  return res;
+}
+
+/*
+ * This is a convenience function for push_certinfo_len that takes a zero
+ * terminated value.
+ */
+CURLcode Curl_ssl_push_certinfo(struct SessionHandle *data,
+                                int certnum,
+                                const char *label,
+                                const char *value)
+{
+  size_t valuelen = strlen(value);
+
+  return Curl_ssl_push_certinfo_len(data, certnum, label, value, valuelen);
 }
 
 /* these functions are only provided by some SSL backends */
