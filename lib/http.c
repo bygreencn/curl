@@ -105,7 +105,7 @@ static int https_getsock(struct connectdata *conn,
  */
 const struct Curl_handler Curl_handler_http = {
   "HTTP",                               /* scheme */
-  ZERO_NULL,                            /* setup_connection */
+  Curl_http_setup_conn,                 /* setup_connection */
   Curl_http,                            /* do_it */
   Curl_http_done,                       /* done */
   ZERO_NULL,                            /* do_more */
@@ -129,7 +129,7 @@ const struct Curl_handler Curl_handler_http = {
  */
 const struct Curl_handler Curl_handler_https = {
   "HTTPS",                              /* scheme */
-  ZERO_NULL,                            /* setup_connection */
+  Curl_http_setup_conn,                 /* setup_connection */
   Curl_http,                            /* do_it */
   Curl_http_done,                       /* done */
   ZERO_NULL,                            /* do_more */
@@ -148,6 +148,19 @@ const struct Curl_handler Curl_handler_https = {
 };
 #endif
 
+
+CURLcode Curl_http_setup_conn(struct connectdata *conn)
+{
+  /* allocate the HTTP-specific struct for the SessionHandle, only to survive
+     during this request */
+  DEBUGASSERT(conn->data->req.protop == NULL);
+
+  conn->data->req.protop = calloc(1, sizeof(struct HTTP));
+  if(!conn->data->req.protop)
+    return CURLE_OUT_OF_MEMORY;
+
+  return CURLE_OK;
+}
 
 /*
  * checkheaders() checks the linked list of custom HTTP headers for a
@@ -330,7 +343,7 @@ static bool pickoneauth(struct auth *pick)
 static CURLcode http_perhapsrewind(struct connectdata *conn)
 {
   struct SessionHandle *data = conn->data;
-  struct HTTP *http = data->state.proto.http;
+  struct HTTP *http = data->req.protop;
   curl_off_t bytessent;
   curl_off_t expectsend = -1; /* default is unknown */
 
@@ -948,7 +961,7 @@ static size_t readmoredata(char *buffer,
                            void *userp)
 {
   struct connectdata *conn = (struct connectdata *)userp;
-  struct HTTP *http = conn->data->state.proto.http;
+  struct HTTP *http = conn->data->req.protop;
   size_t fullsize = size * nitems;
 
   if(0 == http->postsize)
@@ -1019,7 +1032,7 @@ CURLcode Curl_add_buffer_send(Curl_send_buffer *in,
   CURLcode res;
   char *ptr;
   size_t size;
-  struct HTTP *http = conn->data->state.proto.http;
+  struct HTTP *http = conn->data->req.protop;
   size_t sendsize;
   curl_socket_t sockfd;
   size_t headersize;
@@ -1402,7 +1415,7 @@ CURLcode Curl_http_done(struct connectdata *conn,
                         CURLcode status, bool premature)
 {
   struct SessionHandle *data = conn->data;
-  struct HTTP *http =data->state.proto.http;
+  struct HTTP *http =data->req.protop;
 
   Curl_unencode_cleanup(conn);
 
@@ -1442,6 +1455,7 @@ CURLcode Curl_http_done(struct connectdata *conn,
   if(!premature && /* this check is pointless when DONE is called before the
                       entire operation is complete */
      !conn->bits.retry &&
+     !data->set.connect_only &&
      ((http->readbytecount +
        data->req.headerbytecount -
        data->req.deductheadercount)) <= 0) {
@@ -1655,20 +1669,7 @@ CURLcode Curl_http(struct connectdata *conn, bool *done)
      the rest of the request in the PERFORM phase. */
   *done = TRUE;
 
-  /* If there already is a protocol-specific struct allocated for this
-     sessionhandle, deal with it */
-  Curl_reset_reqproto(conn);
-
-  if(!data->state.proto.http) {
-    /* Only allocate this struct if we don't already have it! */
-
-    http = calloc(1, sizeof(struct HTTP));
-    if(!http)
-      return CURLE_OUT_OF_MEMORY;
-    data->state.proto.http = http;
-  }
-  else
-    http = data->state.proto.http;
+  http = data->req.protop;
 
   if(!data->state.this_is_a_follow) {
     /* this is not a followed location, get the original host name */

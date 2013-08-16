@@ -592,22 +592,6 @@ void curl_easy_cleanup(CURL *curl)
 }
 
 /*
- * Store a pointed to the multi handle within the easy handle's data struct.
- */
-void Curl_easy_addmulti(struct SessionHandle *data,
-                        void *multi)
-{
-  data->multi = multi;
-}
-
-void Curl_easy_initHandleData(struct SessionHandle *data)
-{
-    memset(&data->req, 0, sizeof(struct SingleRequest));
-
-    data->req.maxdownload = -1;
-}
-
-/*
  * curl_easy_getinfo() is an external interface that allows an app to retrieve
  * information from a performed transfer and similar.
  */
@@ -703,8 +687,6 @@ CURL *curl_easy_duphandle(CURL *incurl)
 
   Curl_convert_setup(outcurl);
 
-  Curl_easy_initHandleData(outcurl);
-
   outcurl->magic = CURLEASY_MAGIC_NUMBER;
 
   /* we reach this point and thus we are OK */
@@ -738,7 +720,7 @@ void curl_easy_reset(CURL *curl)
 
   data->state.path = NULL;
 
-  Curl_safefree(data->state.proto.generic);
+  Curl_free_request_state(data);
 
   /* zero out UserDefined data: */
   Curl_freeset(data);
@@ -747,9 +729,6 @@ void curl_easy_reset(CURL *curl)
 
   /* zero out Progress data: */
   memset(&data->progress, 0, sizeof(struct Progress));
-
-  /* init Handle data */
-  Curl_easy_initHandleData(data);
 
   data->progress.flags |= PGRS_HIDE;
   data->state.current_speed = -1; /* init to negative == impossible */

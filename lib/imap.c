@@ -163,7 +163,7 @@ const struct Curl_handler Curl_handler_imaps = {
 
 static const struct Curl_handler Curl_handler_imap_proxy = {
   "IMAP",                               /* scheme */
-  ZERO_NULL,                            /* setup_connection */
+  Curl_http_setup_conn,                 /* setup_connection */
   Curl_http,                            /* do_it */
   Curl_http_done,                       /* done */
   ZERO_NULL,                            /* do_more */
@@ -188,7 +188,7 @@ static const struct Curl_handler Curl_handler_imap_proxy = {
 
 static const struct Curl_handler Curl_handler_imaps_proxy = {
   "IMAPS",                              /* scheme */
-  ZERO_NULL,                            /* setup_connection */
+  Curl_http_setup_conn,                 /* setup_connection */
   Curl_http,                            /* do_it */
   Curl_http_done,                       /* done */
   ZERO_NULL,                            /* do_more */
@@ -268,7 +268,7 @@ static bool imap_matchresp(const char *line, size_t len, const char *cmd)
 static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
                            int *resp)
 {
-  struct IMAP *imap = conn->data->state.proto.imap;
+  struct IMAP *imap = conn->data->req.protop;
   struct imap_conn *imapc = &conn->proto.imapc;
   const char *id = imapc->resptag;
   size_t id_len = strlen(id);
@@ -638,7 +638,7 @@ static CURLcode imap_perform_list(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct IMAP *imap = data->state.proto.imap;
+  struct IMAP *imap = data->req.protop;
   char *mailbox;
 
   if(imap->custom)
@@ -673,7 +673,7 @@ static CURLcode imap_perform_select(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct IMAP *imap = data->state.proto.imap;
+  struct IMAP *imap = data->req.protop;
   struct imap_conn *imapc = &conn->proto.imapc;
   char *mailbox;
 
@@ -712,7 +712,7 @@ static CURLcode imap_perform_select(struct connectdata *conn)
 static CURLcode imap_perform_fetch(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
-  struct IMAP *imap = conn->data->state.proto.imap;
+  struct IMAP *imap = conn->data->req.protop;
 
   /* Check we have a UID */
   if(!imap->uid) {
@@ -740,7 +740,7 @@ static CURLcode imap_perform_fetch(struct connectdata *conn)
 static CURLcode imap_perform_append(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
-  struct IMAP *imap = conn->data->state.proto.imap;
+  struct IMAP *imap = conn->data->req.protop;
   char *mailbox;
 
   /* Check we have a mailbox */
@@ -1316,7 +1316,7 @@ static CURLcode imap_state_select_resp(struct connectdata *conn, int imapcode,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct IMAP *imap = conn->data->state.proto.imap;
+  struct IMAP *imap = conn->data->req.protop;
   struct imap_conn *imapc = &conn->proto.imapc;
   const char *line = data->state.buffer;
   char tmp[20];
@@ -1669,13 +1669,11 @@ static CURLcode imap_init(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct IMAP *imap = data->state.proto.imap;
+  struct IMAP *imap;
 
-  if(!imap) {
-    imap = data->state.proto.imap = calloc(sizeof(struct IMAP), 1);
-    if(!imap)
-      result = CURLE_OUT_OF_MEMORY;
-  }
+  imap = data->req.protop = calloc(sizeof(struct IMAP), 1);
+  if(!imap)
+    result = CURLE_OUT_OF_MEMORY;
 
   return result;
 }
@@ -1704,15 +1702,6 @@ static CURLcode imap_connect(struct connectdata *conn, bool *done)
   struct pingpong *pp = &imapc->pp;
 
   *done = FALSE; /* default to not done yet */
-
-  /* If there already is a protocol-specific struct allocated for this
-     sessionhandle, deal with it */
-  Curl_reset_reqproto(conn);
-
-  /* Initialise the IMAP layer */
-  result = imap_init(conn);
-  if(result)
-    return result;
 
   /* We always support persistent connections in IMAP */
   conn->bits.close = FALSE;
@@ -1759,7 +1748,7 @@ static CURLcode imap_done(struct connectdata *conn, CURLcode status,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct IMAP *imap = data->state.proto.imap;
+  struct IMAP *imap = data->req.protop;
 
   (void)premature;
 
@@ -1824,7 +1813,7 @@ static CURLcode imap_perform(struct connectdata *conn, bool *connected,
   /* This is IMAP and no proxy */
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct IMAP *imap = data->state.proto.imap;
+  struct IMAP *imap = data->req.protop;
   struct imap_conn *imapc = &conn->proto.imapc;
   bool selected = FALSE;
 
@@ -1891,15 +1880,6 @@ static CURLcode imap_do(struct connectdata *conn, bool *done)
 
   *done = FALSE; /* default to false */
 
-  /* Since connections can be re-used between SessionHandles, there might be a
-     connection already existing but on a fresh SessionHandle struct. As such
-     we make sure we have a good IMAP struct to play with. For new connections
-     the IMAP struct is allocated and setup in the imap_connect() function. */
-  Curl_reset_reqproto(conn);
-  result = imap_init(conn);
-  if(result)
-    return result;
-
   /* Parse the URL path */
   result = imap_parse_url_path(conn);
   if(result)
@@ -1952,7 +1932,7 @@ static CURLcode imap_disconnect(struct connectdata *conn, bool dead_connection)
 /* Call this when the DO phase has completed */
 static CURLcode imap_dophase_done(struct connectdata *conn, bool connected)
 {
-  struct IMAP *imap = conn->data->state.proto.imap;
+  struct IMAP *imap = conn->data->req.protop;
 
   (void)connected;
 
@@ -2018,6 +1998,11 @@ static CURLcode imap_setup_connection(struct connectdata *conn)
 {
   struct SessionHandle *data = conn->data;
 
+  /* Initialise the IMAP layer */
+  CURLcode result = imap_init(conn);
+  if(result)
+    return result;
+
   if(conn->bits.httpproxy && !data->set.tunnel_thru_httpproxy) {
     /* Unless we have asked to tunnel IMAP operations through the proxy, we
        switch and use HTTP operations only */
@@ -2033,10 +2018,8 @@ static CURLcode imap_setup_connection(struct connectdata *conn)
 #endif
     }
 
-    /* We explicitly mark this connection as persistent here as we're doing
-       IMAP over HTTP and thus we accidentally avoid setting this value
-       otherwise */
-    conn->bits.close = FALSE;
+    /* set it up as an HTTP connection instead */
+    return conn->handler->setup_connection(conn);
 #else
     failf(data, "IMAP over http proxy requires HTTP support built-in!");
     return CURLE_UNSUPPORTED_PROTOCOL;
@@ -2259,7 +2242,7 @@ static CURLcode imap_parse_url_path(struct connectdata *conn)
   /* The imap struct is already initialised in imap_connect() */
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct IMAP *imap = data->state.proto.imap;
+  struct IMAP *imap = data->req.protop;
   const char *begin = data->state.path;
   const char *ptr = begin;
 
@@ -2367,7 +2350,7 @@ static CURLcode imap_parse_custom_request(struct connectdata *conn)
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  struct IMAP *imap = data->state.proto.imap;
+  struct IMAP *imap = data->req.protop;
   const char *custom = data->set.str[STRING_CUSTOMREQUEST];
 
   if(custom) {

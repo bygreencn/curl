@@ -417,7 +417,8 @@ CURLcode Curl_close(struct SessionHandle *data)
   Curl_safefree(data->state.pathbuffer);
   data->state.path = NULL;
 
-  Curl_safefree(data->state.proto.generic);
+  /* freed here just in case DONE wasn't called */
+  Curl_free_request_state(data);
 
   /* Close down all open SSL info and sessions */
   Curl_ssl_close_all(data);
@@ -611,7 +612,6 @@ CURLcode Curl_open(struct SessionHandle **curl)
     res = CURLE_OUT_OF_MEMORY;
   }
   else {
-    Curl_easy_initHandleData(data);
     res = Curl_init_userdefined(&data->set);
 
     data->state.headersize=HEADERSIZE;
@@ -4016,18 +4016,31 @@ static CURLcode setup_range(struct SessionHandle *data)
 }
 
 
-/***************************************************************
-* Setup connection internals specific to the requested protocol.
-* This MUST get called after proxy magic has been figured out.
-***************************************************************/
+/*
+ * setup_connection_internals() -
+ *
+ * Setup connection internals specific to the requested protocol in the
+ * SessionHandle. This is inited and setup before the connection is made but
+ * is about the particular protocol that is to be used.
+ *
+ * This MUST get called after proxy magic has been figured out.
+ */
 static CURLcode setup_connection_internals(struct connectdata *conn)
 {
   const struct Curl_handler * p;
   CURLcode result;
 
-  conn->socktype = SOCK_STREAM; /* most of them are TCP streams */
+  /* in some case in the multi state-machine, we go back to the CONNECT state
+     and then a second (or third or...) call to this function will be made
+     without doing a DISCONNECT or DONE in between (since the connection is
+     yet in place) and therefore this function needs to first make sure
+     there's no lingering previous data allocated. */
+  Curl_free_request_state(conn->data);
 
-  /* Scan protocol handler table. */
+  memset(&conn->data->req, 0, sizeof(struct SingleRequest));
+  conn->data->req.maxdownload = -1;
+
+  conn->socktype = SOCK_STREAM; /* most of them are TCP streams */
 
   /* Perform setup complement if some. */
   p = conn->handler;
@@ -4045,10 +4058,25 @@ static CURLcode setup_connection_internals(struct connectdata *conn)
     /* we check for -1 here since if proxy was detected already, this
        was very likely already set to the proxy port */
     conn->port = p->defport;
-  conn->remote_port = (unsigned short)conn->given->defport;
+
+  /* only if remote_port was not already parsed off the URL we use the
+     default port number */
+  if(!conn->remote_port)
+    conn->remote_port = (unsigned short)conn->given->defport;
 
   return CURLE_OK;
 }
+
+/*
+ * Curl_free_request_state() should free temp data that was allocated in the
+ * SessionHandle for this single request.
+ */
+
+void Curl_free_request_state(struct SessionHandle *data)
+{
+  Curl_safefree(data->req.protop);
+}
+
 
 #ifndef CURL_DISABLE_PROXY
 /****************************************************************
@@ -5218,6 +5246,27 @@ static CURLcode create_conn(struct SessionHandle *data,
 #endif /* CURL_DISABLE_PROXY */
 
   /*************************************************************
+   * If the protocol is using SSL and HTTP proxy is used, we set
+   * the tunnel_proxy bit.
+   *************************************************************/
+  if((conn->given->flags&PROTOPT_SSL) && conn->bits.httpproxy)
+    conn->bits.tunnel_proxy = TRUE;
+
+  /*************************************************************
+   * Figure out the remote port number and fix it in the URL
+   *************************************************************/
+  result = parse_remote_port(data, conn);
+  if(result != CURLE_OK)
+    return result;
+
+  /* Check for overridden login details and set them accordingly so they
+     they are known when protocol->setup_connection is called! */
+  override_login(data, conn, user, passwd, options);
+  result = set_login(conn, user, passwd, options);
+  if(result != CURLE_OK)
+    return result;
+
+  /*************************************************************
    * Setup internals depending on protocol. Needs to be done after
    * we figured out what/if proxy to use.
    *************************************************************/
@@ -5266,31 +5315,11 @@ static CURLcode create_conn(struct SessionHandle *data,
     }
 
     /* since we skip do_init() */
-    Curl_speedinit(data);
+    do_init(conn);
 
     return result;
   }
 #endif
-
-  /*************************************************************
-   * If the protocol is using SSL and HTTP proxy is used, we set
-   * the tunnel_proxy bit.
-   *************************************************************/
-  if((conn->given->flags&PROTOPT_SSL) && conn->bits.httpproxy)
-    conn->bits.tunnel_proxy = TRUE;
-
-  /*************************************************************
-   * Figure out the remote port number and fix it in the URL
-   *************************************************************/
-  result = parse_remote_port(data, conn);
-  if(result != CURLE_OK)
-    return result;
-
-  /* Check for overridden login details and set them accordingly */
-  override_login(data, conn, user, passwd, options);
-  result = set_login(conn, user, passwd, options);
-  if(result != CURLE_OK)
-    return result;
 
   /* Get a cloned copy of the SSL config situation stored in the
      connection struct. But to get this going nicely, we must first make
@@ -5728,6 +5757,7 @@ CURLcode Curl_done(struct connectdata **connp,
                     this was either closed or handed over to the connection
                     cache here, and therefore cannot be used from this point on
                  */
+  Curl_free_request_state(data);
 
   return result;
 }
@@ -5759,9 +5789,6 @@ static CURLcode do_init(struct connectdata *conn)
        opt_no_body is set FALSE since then we'll behave wrong when getting
        HTTP. */
     data->set.httpreq = HTTPREQ_GET;
-
-  /* NB: the content encoding software depends on this initialization */
-  Curl_easy_initHandleData(data);
 
   k->start = Curl_tvnow(); /* start time */
   k->now = k->start;   /* current time is now */
@@ -5861,13 +5888,3 @@ CURLcode Curl_do_more(struct connectdata *conn, int *complete)
   return result;
 }
 
-/* Called on connect, and if there's already a protocol-specific struct
-   allocated for a different connection, this frees it that it can be setup
-   properly later on. */
-void Curl_reset_reqproto(struct connectdata *conn)
-{
-  struct SessionHandle *data = conn->data;
-
-  Curl_safefree(data->state.proto.generic);
-  data->state.proto.generic = NULL;
-}
