@@ -69,6 +69,7 @@
 #include "tool_msgs.h"
 #include "tool_operate.h"
 #include "tool_operhlp.h"
+#include "tool_paramhlp.h"
 #include "tool_parsecfg.h"
 #include "tool_setopt.h"
 #include "tool_sleep.h"
@@ -323,6 +324,18 @@ int operate(struct Configurable *config, int argc, argv_item_t argv[])
       if(res)
         goto quit_curl;
     }
+  }
+
+  if(config->userpwd && !config->xoauth2_bearer) {
+    res = checkpasswd("host", &config->userpwd);
+    if(res)
+      goto quit_curl;
+  }
+
+  if(config->proxyuserpwd) {
+    res = checkpasswd("proxy", &config->proxyuserpwd);
+    if(res)
+      goto quit_curl;
   }
 
   if((!config->url_list || !config->url_list->url) && !config->list_engines) {
@@ -976,6 +989,9 @@ int operate(struct Configurable *config, int argc, argv_item_t argv[])
            confuse XML parser and/or hash check will fail. */
         else if(!config->use_metalink)
           my_setopt(curl, CURLOPT_HEADER, config->include_headers?1L:0L);
+
+        if(config->xoauth2_bearer)
+          my_setopt_str(curl, CURLOPT_XOAUTH2_BEARER, config->xoauth2_bearer);
 
 #if !defined(CURL_DISABLE_PROXY)
         {

@@ -75,6 +75,7 @@ static const struct LongShort aliases[]= {
   {"*",  "url",                      TRUE},
   {"*a", "random-file",              TRUE},
   {"*b", "egd-file",                 TRUE},
+  {"*B", "bearer",                   TRUE},
   {"*c", "connect-timeout",          TRUE},
   {"*d", "ciphers",                  TRUE},
   {"*e", "disable-epsv",             FALSE},
@@ -497,6 +498,9 @@ ParameterError getparameter(char *flag,    /* f or -long-flag */
         break;
       case 'b': /* egd-file */
         GetStr(&config->egd_file, nextarg);
+        break;
+      case 'B': /* XOAUTH2 Bearer */
+        GetStr(&config->xoauth2_bearer, nextarg);
         break;
       case 'c': /* connect-timeout */
         err = str2udouble(&config->connecttimeout, nextarg);
@@ -1629,20 +1633,14 @@ ParameterError getparameter(char *flag,    /* f or -long-flag */
     }
     break;
     case 'u':
-      /* user:password  */
+      /* user:password;options  */
       GetStr(&config->userpwd, nextarg);
       cleanarg(nextarg);
-      err = checkpasswd("host", &config->userpwd);
-      if(err)
-        return err;
       break;
     case 'U':
       /* Proxy user:password  */
       GetStr(&config->proxyuserpwd, nextarg);
       cleanarg(nextarg);
-      err = checkpasswd("proxy", &config->proxyuserpwd);
-      if(err)
-        return err;
       break;
     case 'v':
       if(toggle) {
