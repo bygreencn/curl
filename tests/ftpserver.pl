@@ -829,6 +829,9 @@ sub FETCH_imap {
         $data[0] = $response;
         logmsg "return proof we are we\n";
     }
+    elsif ($selected eq "") {
+        sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
+    }
     else {
         logmsg "retrieve a mail\n";
 
@@ -941,8 +944,13 @@ sub STORE_imap {
 
     logmsg "STORE_imap got $args\n";
 
-    sendcontrol "* $uid FETCH (FLAGS (\\Seen \\Deleted))\r\n";
-    sendcontrol "$cmdid OK STORE completed\r\n";
+    if ($selected eq "") {
+        sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
+    }
+    else {
+        sendcontrol "* $uid FETCH (FLAGS (\\Seen \\Deleted))\r\n";
+        sendcontrol "$cmdid OK STORE completed\r\n";
+    }
 
     return 0;
 }
@@ -1033,27 +1041,34 @@ sub STATUS_imap {
 }
 
 sub SEARCH_imap {
-    my ($testno) = @_;
-    fix_imap_params($testno);
+    my ($what) = @_;
+    fix_imap_params($what);
 
-    logmsg "SEARCH_imap got test $testno\n";
+    logmsg "SEARCH_imap got $what\n";
 
-    $testno =~ s/[^0-9]//g;
-    my $testpart = "";
-    if ($testno > 10000) {
-        $testpart = $testno % 10000;
-        $testno = int($testno / 10000);
+    if ($selected eq "") {
+        sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
     }
+    else {
+        my $testno = $selected;
 
-    loadtest("$srcdir/data/test$testno");
+        $testno =~ s/^([^0-9]*)//;
+        my $testpart = "";
+        if ($testno > 10000) {
+            $testpart = $testno % 10000;
+            $testno = int($testno / 10000);
+        }
 
-    my @data = getpart("reply", "data$testpart");
+        loadtest("$srcdir/data/test$testno");
 
-    for my $d (@data) {
-        sendcontrol $d;
+        my @data = getpart("reply", "data$testpart");
+
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        sendcontrol "$cmdid OK SEARCH completed\r\n";
     }
-
-    sendcontrol "$cmdid OK SEARCH completed\r\n";
 
     return 0;
 }
