@@ -578,10 +578,13 @@ sub protocolsetup {
         %commandfunc = (
             'APPEND' => \&APPEND_imap,
             'CAPABILITY' => \&CAPABILITY_imap,
+            'CREATE'  => \&CREATE_imap,
+            'DELETE'  => \&DELETE_imap,
             'EXAMINE' => \&EXAMINE_imap,
             'FETCH'  => \&FETCH_imap,
             'LIST'   => \&LIST_imap,
             'LOGOUT'   => \&LOGOUT_imap,
+            'RENAME'  => \&RENAME_imap,
             'SEARCH'  => \&SEARCH_imap,
             'SELECT' => \&SELECT_imap,
             'STATUS'  => \&STATUS_imap,
@@ -1001,14 +1004,21 @@ sub EXAMINE_imap {
 
     logmsg "EXAMINE_imap got test $testno\n";
 
-    # Example from RFC 3501, 6.3.2. EXAMINE Command
-    sendcontrol "* 17 EXISTS\r\n";
-    sendcontrol "* 2 RECENT\r\n";
-    sendcontrol "* OK [UNSEEN 8] Message 8 is first unseen\r\n";
-    sendcontrol "* OK [UIDVALIDITY 3857529045] UIDs valid\r\n";
-    sendcontrol "* OK [UIDNEXT 4392] Predicted next UID\r\n";
-    sendcontrol "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n";
-    sendcontrol "* OK [PERMANENTFLAGS ()] No permanent flags permitted\r\n";
+    $testno =~ s/[^0-9]//g;
+    my $testpart = "";
+    if ($testno > 10000) {
+        $testpart = $testno % 10000;
+        $testno = int($testno / 10000);
+    }
+
+    loadtest("$srcdir/data/test$testno");
+
+    my @data = getpart("reply", "data$testpart");
+
+    for my $d (@data) {
+        sendcontrol $d;
+    }
+
     sendcontrol "$cmdid OK [READ-ONLY] EXAMINE completed\r\n";
 
     return 0;
@@ -1068,6 +1078,55 @@ sub SEARCH_imap {
         }
 
         sendcontrol "$cmdid OK SEARCH completed\r\n";
+    }
+
+    return 0;
+}
+
+sub CREATE_imap {
+    my ($args) = @_;
+    fix_imap_params($args);
+
+    logmsg "CREATE_imap got $args\n";
+
+    if ($args eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        sendcontrol "$cmdid OK CREATE completed\r\n";
+    }
+
+    return 0;
+}
+
+sub DELETE_imap {
+    my ($args) = @_;
+    fix_imap_params($args);
+
+    logmsg "DELETE_imap got $args\n";
+
+    if ($args eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        sendcontrol "$cmdid OK DELETE completed\r\n";
+    }
+
+    return 0;
+}
+
+sub RENAME_imap {
+    my ($args) = @_;
+    my ($from_mailbox, $to_mailbox) = split(/ /, $args, 2);
+    fix_imap_params($from_mailbox, $to_mailbox);
+
+    logmsg "RENAME_imap got $args\n";
+
+    if (($from_mailbox eq "") || ($to_mailbox eq "")) {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        sendcontrol "$cmdid OK RENAME completed\r\n";
     }
 
     return 0;
