@@ -576,22 +576,23 @@ sub protocolsetup {
     }
     elsif($proto eq 'imap') {
         %commandfunc = (
-            'APPEND' => \&APPEND_imap,
+            'APPEND'     => \&APPEND_imap,
             'CAPABILITY' => \&CAPABILITY_imap,
-            'CREATE'  => \&CREATE_imap,
-            'DELETE'  => \&DELETE_imap,
-            'EXAMINE' => \&EXAMINE_imap,
-            'FETCH'  => \&FETCH_imap,
-            'LIST'   => \&LIST_imap,
-            'LOGOUT'   => \&LOGOUT_imap,
-            'RENAME'  => \&RENAME_imap,
-            'SEARCH'  => \&SEARCH_imap,
-            'SELECT' => \&SELECT_imap,
-            'STATUS'  => \&STATUS_imap,
-            'STORE'  => \&STORE_imap
+            'CHECK'      => \&CHECK_imap,
+            'CREATE'     => \&CREATE_imap,
+            'DELETE'     => \&DELETE_imap,
+            'EXAMINE'    => \&EXAMINE_imap,
+            'FETCH'      => \&FETCH_imap,
+            'LIST'       => \&LIST_imap,
+            'LOGOUT'     => \&LOGOUT_imap,
+            'RENAME'     => \&RENAME_imap,
+            'SEARCH'     => \&SEARCH_imap,
+            'SELECT'     => \&SELECT_imap,
+            'STATUS'     => \&STATUS_imap,
+            'STORE'      => \&STORE_imap
         );
         %displaytext = (
-            'LOGIN'  => ' OK LOGIN completed',
+            'LOGIN'   => ' OK LOGIN completed',
             'welcome' => join("",
             '        _   _ ____  _     '."\r\n",
             '    ___| | | |  _ \| |    '."\r\n",
@@ -816,54 +817,57 @@ sub SELECT_imap {
 sub FETCH_imap {
     my ($args) = @_;
     my ($uid, $how) = split(/ /, $args, 2);
-    my @data;
-    my $size;
     fix_imap_params($uid, $how);
 
     logmsg "FETCH_imap got $args\n";
 
-    if($selected eq "verifiedserver") {
-        # this is the secret command that verifies that this actually is
-        # the curl test server
-        my $response = "WE ROOLZ: $$\r\n";
-        if($verbose) {
-            print STDERR "FTPD: We returned proof we are the test server\n";
-        }
-        $data[0] = $response;
-        logmsg "return proof we are we\n";
-    }
-    elsif ($selected eq "") {
+    if ($selected eq "") {
         sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
     }
     else {
-        logmsg "retrieve a mail\n";
+        my @data;
+        my $size;
 
-        my $testno = $selected;
-        $testno =~ s/^([^0-9]*)//;
-        my $testpart = "";
-        if ($testno > 10000) {
-            $testpart = $testno % 10000;
-            $testno = int($testno / 10000);
+        if($selected eq "verifiedserver") {
+            # this is the secret command that verifies that this actually is
+            # the curl test server
+            my $response = "WE ROOLZ: $$\r\n";
+            if($verbose) {
+                print STDERR "FTPD: We returned proof we are the test server\n";
+            }
+            $data[0] = $response;
+            logmsg "return proof we are we\n";
+        }
+        else {
+            logmsg "retrieve a mail\n";
+
+            my $testno = $selected;
+            $testno =~ s/^([^0-9]*)//;
+            my $testpart = "";
+            if ($testno > 10000) {
+                $testpart = $testno % 10000;
+                $testno = int($testno / 10000);
+            }
+
+            # send mail content
+            loadtest("$srcdir/data/test$testno");
+
+            @data = getpart("reply", "data$testpart");
         }
 
-        # send mail content
-        loadtest("$srcdir/data/test$testno");
+        for (@data) {
+            $size += length($_);
+        }
 
-        @data = getpart("reply", "data$testpart");
+        sendcontrol "* $uid FETCH ($how {$size}\r\n";
+
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        sendcontrol ")\r\n";
+        sendcontrol "$cmdid OK FETCH completed\r\n";
     }
-
-    for (@data) {
-        $size += length($_);
-    }
-
-    sendcontrol "* $uid FETCH ($how {$size}\r\n";
-
-    for my $d (@data) {
-        sendcontrol $d;
-    }
-
-    sendcontrol ")\r\n";
-    sendcontrol "$cmdid OK FETCH completed\r\n";
 
     return 0;
 }
@@ -874,68 +878,73 @@ sub APPEND_imap {
     logmsg "APPEND_imap got $args\r\n";
 
     $args =~ /^([^ ]+) [^{]*\{(\d+)\}$/;
-    my ($folder, $size) = ($1, $2);
-    fix_imap_params($folder);
+    my ($mailbox, $size) = ($1, $2);
+    fix_imap_params($mailbox);
 
-    sendcontrol "+ Ready for literal data\r\n";
+    if($mailbox eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        sendcontrol "+ Ready for literal data\r\n";
 
-    my $testno = $folder;
-    my $filename = "log/upload.$testno";
+        my $testno = $mailbox;
+        my $filename = "log/upload.$testno";
 
-    logmsg "Store test number $testno in $filename\n";
+        logmsg "Store test number $testno in $filename\n";
 
-    open(FILE, ">$filename") ||
-        return 0; # failed to open output
+        open(FILE, ">$filename") ||
+            return 0; # failed to open output
 
-    my $received = 0;
-    my $line;
-    while(5 == (sysread \*SFREAD, $line, 5)) {
-        if($line eq "DATA\n") {
-            sysread \*SFREAD, $line, 5;
+        my $received = 0;
+        my $line;
+        while(5 == (sysread \*SFREAD, $line, 5)) {
+            if($line eq "DATA\n") {
+                sysread \*SFREAD, $line, 5;
 
-            my $chunksize = 0;
-            if($line =~ /^([0-9a-fA-F]{4})\n/) {
-                $chunksize = hex($1);
-            }
+                my $chunksize = 0;
+                if($line =~ /^([0-9a-fA-F]{4})\n/) {
+                    $chunksize = hex($1);
+                }
 
-            read_mainsockf(\$line, $chunksize);
+                read_mainsockf(\$line, $chunksize);
 
-            my $left = $size - $received;
-            my $datasize = ($left > $chunksize) ? $chunksize : $left;
+                my $left = $size - $received;
+                my $datasize = ($left > $chunksize) ? $chunksize : $left;
 
-            if($datasize > 0) {
-                logmsg "> Appending $datasize bytes to file\n";
-                print FILE substr($line, 0, $datasize) if(!$nosave);
-                $line = substr($line, $datasize);
+                if($datasize > 0) {
+                    logmsg "> Appending $datasize bytes to file\n";
+                    print FILE substr($line, 0, $datasize) if(!$nosave);
+                    $line = substr($line, $datasize);
 
-                $received += $datasize;
-                if($received == $size) {
-                    logmsg "Received all data, waiting for final CRLF.\n";
+                    $received += $datasize;
+                    if($received == $size) {
+                        logmsg "Received all data, waiting for final CRLF.\n";
+                    }
+                }
+
+                if($received == $size && $line eq "\r\n") {
+                    last;
                 }
             }
-
-            if($received == $size && $line eq "\r\n") {
+            elsif($line eq "DISC\n") {
+                logmsg "Unexpected disconnect!\n";
+                last;
+            }
+            else {
+                logmsg "No support for: $line";
                 last;
             }
         }
-        elsif($line eq "DISC\n") {
-            logmsg "Unexpected disconnect!\n";
-            last;
+
+        if($nosave) {
+            print FILE "$size bytes would've been stored here\n";
         }
-        else {
-            logmsg "No support for: $line";
-            last;
-        }
+        close(FILE);
+
+        logmsg "received $size bytes upload\n";
+
+        sendcontrol "$cmdid OK APPEND completed\r\n";
     }
-
-    if($nosave) {
-        print FILE "$size bytes would've been stored here\n";
-    }
-    close(FILE);
-
-    logmsg "received $size bytes upload\n";
-
-    sendcontrol "$cmdid OK APPEND completed\r\n";
 
     return 0;
 }
@@ -950,6 +959,9 @@ sub STORE_imap {
     if ($selected eq "") {
         sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
     }
+    elsif (($uid eq "") || ($what eq "")) {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
     else {
         sendcontrol "* $uid FETCH (FLAGS (\\Seen \\Deleted))\r\n";
         sendcontrol "$cmdid OK STORE completed\r\n";
@@ -961,39 +973,45 @@ sub STORE_imap {
 sub LIST_imap {
     my ($args) = @_;
     my ($reference, $mailbox) = split(/ /, $args, 2);
-    my @data;
     fix_imap_params($reference, $mailbox);
 
     logmsg "LIST_imap got $args\n";
 
-    if ($reference eq "verifiedserver") {
-         # this is the secret command that verifies that this actually is
-         # the curl test server
-         @data = ("* LIST () \"/\" \"WE ROOLZ: $$\"\r\n");
-         if($verbose) {
-             print STDERR "FTPD: We returned proof we are the test server\n";
-         }
-         logmsg "return proof we are we\n";
+    if ($reference eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    elsif ($reference eq "verifiedserver") {
+        # this is the secret command that verifies that this actually is
+        # the curl test server
+        sendcontrol "* LIST () \"/\" \"WE ROOLZ: $$\"\r\n";
+        sendcontrol "$cmdid OK LIST Completed\r\n";
+
+        if($verbose) {
+            print STDERR "FTPD: We returned proof we are the test server\n";
+        }
+
+        logmsg "return proof we are we\n";
     }
     else {
         my $testno = $reference;
+
         $testno =~ s/^([^0-9]*)//;
         my $testpart = "";
         if ($testno > 10000) {
             $testpart = $testno % 10000;
             $testno = int($testno / 10000);
         }
-    
+
         loadtest("$srcdir/data/test$testno");
 
-        @data = getpart("reply", "data$testpart");
-    }
+        my @data = getpart("reply", "data$testpart");
 
-    for my $d (@data) {
-        sendcontrol $d;
-    }
+        for my $d (@data) {
+            sendcontrol $d;
+        }
 
-    sendcontrol "$cmdid OK LIST Completed\r\n";
+        sendcontrol "$cmdid OK LIST Completed\r\n";
+    }
 
     return 0;
 }
@@ -1002,24 +1020,29 @@ sub EXAMINE_imap {
     my ($testno) = @_;
     fix_imap_params($testno);
 
-    logmsg "EXAMINE_imap got test $testno\n";
+    logmsg "EXAMINE_imap got $testno\n";
 
-    $testno =~ s/[^0-9]//g;
-    my $testpart = "";
-    if ($testno > 10000) {
-        $testpart = $testno % 10000;
-        $testno = int($testno / 10000);
+    if ($testno eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
     }
+    else {
+        $testno =~ s/[^0-9]//g;
+        my $testpart = "";
+        if ($testno > 10000) {
+            $testpart = $testno % 10000;
+            $testno = int($testno / 10000);
+        }
 
-    loadtest("$srcdir/data/test$testno");
+        loadtest("$srcdir/data/test$testno");
 
-    my @data = getpart("reply", "data$testpart");
+        my @data = getpart("reply", "data$testpart");
 
-    for my $d (@data) {
-        sendcontrol $d;
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        sendcontrol "$cmdid OK [READ-ONLY] EXAMINE completed\r\n";
     }
-
-    sendcontrol "$cmdid OK [READ-ONLY] EXAMINE completed\r\n";
 
     return 0;
 }
@@ -1028,24 +1051,29 @@ sub STATUS_imap {
     my ($testno) = @_;
     fix_imap_params($testno);
 
-    logmsg "STATUS_imap got test $testno\n";
+    logmsg "STATUS_imap got $testno\n";
 
-    $testno =~ s/[^0-9]//g;
-    my $testpart = "";
-    if ($testno > 10000) {
-        $testpart = $testno % 10000;
-        $testno = int($testno / 10000);
+    if ($testno eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
     }
+    else {
+        $testno =~ s/[^0-9]//g;
+        my $testpart = "";
+        if ($testno > 10000) {
+            $testpart = $testno % 10000;
+            $testno = int($testno / 10000);
+        }
 
-    loadtest("$srcdir/data/test$testno");
+        loadtest("$srcdir/data/test$testno");
 
-    my @data = getpart("reply", "data$testpart");
+        my @data = getpart("reply", "data$testpart");
 
-    for my $d (@data) {
-        sendcontrol $d;
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        sendcontrol "$cmdid OK STATUS completed\r\n";
     }
-
-    sendcontrol "$cmdid OK STATUS completed\r\n";
 
     return 0;
 }
@@ -1058,6 +1086,9 @@ sub SEARCH_imap {
 
     if ($selected eq "") {
         sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
+    }
+    elsif ($what eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
     }
     else {
         my $testno = $selected;
@@ -1127,6 +1158,17 @@ sub RENAME_imap {
     }
     else {
         sendcontrol "$cmdid OK RENAME completed\r\n";
+    }
+
+    return 0;
+}
+
+sub CHECK_imap {
+    if ($selected eq "") {
+        sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
+    }
+    else {
+        sendcontrol "$cmdid OK CHECK completed\r\n";
     }
 
     return 0;
