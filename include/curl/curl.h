@@ -1608,6 +1608,7 @@ enum {
                              for us! */
   CURL_HTTP_VERSION_1_0,  /* please use HTTP 1.0 in the request */
   CURL_HTTP_VERSION_1_1,  /* please use HTTP 1.1 in the request */
+  CURL_HTTP_VERSION_2_0,  /* please use HTTP 2.0 in the request */
 
   CURL_HTTP_VERSION_LAST /* *ILLEGAL* http version */
 };
@@ -2171,6 +2172,7 @@ typedef struct {
 #define CURL_VERSION_CURLDEBUG (1<<13) /* debug memory tracking supported */
 #define CURL_VERSION_TLSAUTH_SRP (1<<14) /* TLS-SRP auth is supported */
 #define CURL_VERSION_NTLM_WB   (1<<15) /* NTLM delegating to winbind helper */
+#define CURL_VERSION_HTTP2     (1<<16) /* HTTP2 support built-in */
 
  /*
  * NAME curl_version_info()
