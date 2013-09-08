@@ -21,7 +21,13 @@
  * KIND, either express or implied.
  *
  ***************************************************************************/
+#include "curl_setup.h"
+
 #ifndef CURL_DISABLE_HTTP
+
+#ifdef USE_NGHTTP2
+#include <nghttp2/nghttp2.h>
+#endif
 
 extern const struct Curl_handler Curl_handler_http;
 
@@ -140,6 +146,14 @@ struct HTTP {
 
   void *send_buffer; /* used if the request couldn't be sent in one chunk,
                         points to an allocated send_buffer struct */
+};
+
+struct http_conn {
+#ifdef USE_NGHTTP2
+  nghttp2_session *h2;
+#else
+  int unused; /* prevent a compiler warning */
+#endif
 };
 
 CURLcode Curl_http_readwrite_headers(struct SessionHandle *data,

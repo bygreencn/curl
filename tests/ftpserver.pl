@@ -556,15 +556,17 @@ sub protocolsetup {
     }
     elsif($proto eq 'pop3') {
         %commandfunc = (
-            'CAPA' => \&CAPA_pop3,
             'AUTH' => \&AUTH_pop3,
-            'RETR' => \&RETR_pop3,
+            'CAPA' => \&CAPA_pop3,
+            'DELE' => \&DELE_pop3,
             'LIST' => \&LIST_pop3,
+            'QUIT' => \&QUIT_pop3,
+            'RETR' => \&RETR_pop3,
+            'STAT' => \&STAT_pop3,
         );
         %displaytext = (
             'USER' => '+OK We are happy you popped in!',
             'PASS' => '+OK Access granted',
-            'QUIT' => '+OK byebye',
             'welcome' => join("",
             '        _   _ ____  _     '."\r\n",
             '    ___| | | |  _ \| |    '."\r\n",
@@ -1230,69 +1232,104 @@ sub AUTH_pop3 {
 }
 
 sub RETR_pop3 {
-     my ($testno) = @_;
-     my @data;
+    my ($testno) = @_;
+    my @data;
 
-     if($testno =~ /^verifiedserver$/) {
-         # this is the secret command that verifies that this actually is
-         # the curl test server
-         my $response = "WE ROOLZ: $$\r\n";
-         if($verbose) {
-             print STDERR "FTPD: We returned proof we are the test server\n";
-         }
-         $data[0] = $response;
-         logmsg "return proof we are we\n";
-     }
-     else {
-         logmsg "retrieve a mail\n";
+    if($testno =~ /^verifiedserver$/) {
+        # this is the secret command that verifies that this actually is
+        # the curl test server
+        my $response = "WE ROOLZ: $$\r\n";
+        if($verbose) {
+            print STDERR "FTPD: We returned proof we are the test server\n";
+        }
+        $data[0] = $response;
+        logmsg "return proof we are we\n";
+    }
+    else {
+        logmsg "retrieve a mail\n";
 
-         $testno =~ s/^([^0-9]*)//;
-         my $testpart = "";
-         if ($testno > 10000) {
-             $testpart = $testno % 10000;
-             $testno = int($testno / 10000);
-         }
+        $testno =~ s/^([^0-9]*)//;
+        my $testpart = "";
+        if ($testno > 10000) {
+            $testpart = $testno % 10000;
+            $testno = int($testno / 10000);
+        }
 
-         # send mail content
-         loadtest("$srcdir/data/test$testno");
+        # send mail content
+        loadtest("$srcdir/data/test$testno");
 
-         @data = getpart("reply", "data$testpart");
-     }
+        @data = getpart("reply", "data$testpart");
+    }
 
-     sendcontrol "+OK Mail transfer starts\r\n";
+    sendcontrol "+OK Mail transfer starts\r\n";
 
-     for my $d (@data) {
-         sendcontrol $d;
-     }
+    for my $d (@data) {
+        sendcontrol $d;
+    }
 
-     # end with the magic 3-byte end of mail marker, assumes that the
-     # mail body ends with a CRLF!
-     sendcontrol ".\r\n";
+    # end with the magic 3-byte end of mail marker, assumes that the
+    # mail body ends with a CRLF!
+    sendcontrol ".\r\n";
 
-     return 0;
+    return 0;
 }
 
 sub LIST_pop3 {
+    # This is a built-in fake-message list
+    my @data = (
+        "1 100\r\n",
+        "2 4294967400\r\n",	# > 4 GB
+        "4 200\r\n", # Note that message 3 is a simulated "deleted" message
+    );
 
-# this is a built-in fake-message list
-my @pop3list=(
-"1 100\r\n",
-"2 4294967400\r\n",	# > 4 GB
-"4 200\r\n", # Note that message 3 is a simulated "deleted" message
-);
+    logmsg "retrieve a message list\n";
 
-     logmsg "retrieve a message list\n";
+    sendcontrol "+OK Listing starts\r\n";
 
-     sendcontrol "+OK Listing starts\r\n";
+    for my $d (@data) {
+        sendcontrol $d;
+    }
 
-     for my $d (@pop3list) {
-         sendcontrol $d;
-     }
+    # End with the magic 3-byte end of listing marker
+    sendcontrol ".\r\n";
 
-     # end with the magic 3-byte end of listing marker
-     sendcontrol ".\r\n";
+    return 0;
+}
 
-     return 0;
+sub DELE_pop3 {
+    my ($msg) = @_;
+
+    logmsg "DELE_pop3 got $msg\n";
+
+    if ($msg eq "") {
+        sendcontrol "-ERR Protocol error\r\n";
+    }
+    else {
+        sendcontrol "+OK\r\n";
+    }
+
+    return 0;
+}
+
+sub STAT_pop3 {
+    my ($args) = @_;
+
+    if ($args ne "") {
+        sendcontrol "-ERR Protocol error\r\n";
+    }
+    else {
+        # Send statistics for the built-in fake message list as
+        # detailed in the LIST_pop3 function above
+        sendcontrol "+OK 3 4294967800\r\n";
+    }
+
+    return 0;
+}
+
+sub QUIT_pop3 {
+    sendcontrol "+OK byebye\r\n";
+
+    return 0;
 }
 
 ################
