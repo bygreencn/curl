@@ -2,7 +2,7 @@
 <info>
 <keywords>
 POP3
-DELE
+UIDL
 CUSTOMREQUEST
 </keywords>
 </info>
@@ -10,6 +10,16 @@ CUSTOMREQUEST
 #
 # Server-side
 <reply>
+<servercmd>
+CAPA UIDL USER
+</servercmd>
+# When doing UIDL, we get the default list output hard-coded in the test
+# POP3 server
+<datacheck>
+1 1
+2 2
+3 4
+</datacheck>
 </reply>
 
 #
@@ -19,10 +29,10 @@ CUSTOMREQUEST
 pop3
 </server>
  <name>
-POP3 DELE message (CUSTOMREQUEST)
+POP3 UIDL (CUSTOMREQUEST)
  </name>
  <command>
-pop3://%HOSTIP:%POP3PORT/858 -u user:secret -X DELE -I
+pop3://%HOSTIP:%POP3PORT -u user:secret -X UIDL
 </command>
 </client>
 
@@ -33,7 +43,7 @@ pop3://%HOSTIP:%POP3PORT/858 -u user:secret -X DELE -I
 CAPA
 USER user
 PASS secret
-DELE 858
+UIDL
 QUIT
 </protocol>
 </verify>

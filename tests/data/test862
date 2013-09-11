@@ -2,7 +2,7 @@
 <info>
 <keywords>
 POP3
-DELE
+TOP
 CUSTOMREQUEST
 </keywords>
 </info>
@@ -10,6 +10,14 @@ CUSTOMREQUEST
 #
 # Server-side
 <reply>
+<servercmd>
+CAPA TOP USER
+</servercmd>
+<data>
+From: me@somewhere
+To: fake@nowhere
+
+</data>
 </reply>
 
 #
@@ -19,10 +27,10 @@ CUSTOMREQUEST
 pop3
 </server>
  <name>
-POP3 DELE message (CUSTOMREQUEST)
+POP3 retrieve message header (CUSTOMREQUEST)
  </name>
  <command>
-pop3://%HOSTIP:%POP3PORT/858 -u user:secret -X DELE -I
+pop3://%HOSTIP:%POP3PORT -u user:secret -X 'TOP 862 0'
 </command>
 </client>
 
@@ -33,7 +41,7 @@ pop3://%HOSTIP:%POP3PORT/858 -u user:secret -X DELE -I
 CAPA
 USER user
 PASS secret
-DELE 858
+TOP 862 0
 QUIT
 </protocol>
 </verify>

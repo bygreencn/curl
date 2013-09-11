@@ -138,8 +138,8 @@ my $nodataconn;    # set if ftp srvr doesn't establish or accepts data channel
 my $nodataconn425; # set if ftp srvr doesn't establish data ch and replies 425
 my $nodataconn421; # set if ftp srvr doesn't establish data ch and replies 421
 my $nodataconn150; # set if ftp srvr doesn't establish data ch and replies 150
-my $support_capa;  # set if server supports capability command
-my $support_auth;  # set if server supports authentication command
+my @capabilities;  # set if server supports capability commands
+my @auth_mechs;    # set if server supports authentication commands
 my %customreply;   #
 my %customcount;   #
 my %delayreply;    #
@@ -560,9 +560,12 @@ sub protocolsetup {
             'CAPA' => \&CAPA_pop3,
             'DELE' => \&DELE_pop3,
             'LIST' => \&LIST_pop3,
+            'NOOP' => \&NOOP_pop3,
             'QUIT' => \&QUIT_pop3,
             'RETR' => \&RETR_pop3,
             'STAT' => \&STAT_pop3,
+            'TOP'  => \&TOP_pop3,
+            'UIDL' => \&UIDL_pop3,
         );
         %displaytext = (
             'USER' => '+OK We are happy you popped in!',
@@ -776,18 +779,27 @@ sub fix_imap_params {
 
 sub CAPABILITY_imap {
     my ($testno) = @_;
-    my $data;
 
-    if(!$support_capa) {
+    if((!@capabilities) && (!@auth_mechs)) {
         sendcontrol "$cmdid BAD Command\r\n";
     }
     else {
+        my $data;
+
+        # Calculate the CAPABILITY response
         $data = "* CAPABILITY IMAP4";
-        if($support_auth) {
-            $data .= " AUTH=UNKNOWN";
+
+        for my $c (@capabilities) {
+            $data .= " $c";
         }
+
+        for my $am (@auth_mechs) {
+            $data .= " AUTH=$am";
+        }
+
         $data .= " pingpong test server\r\n";
 
+        # Send the CAPABILITY response
         sendcontrol $data;
         sendcontrol "$cmdid OK CAPABILITY completed\r\n";
     }
@@ -1189,23 +1201,43 @@ sub LOGOUT_imap {
 
 sub CAPA_pop3 {
     my ($testno) = @_;
-    my @data = ();
 
-    if(!$support_capa) {
-        push @data, "-ERR Unsupported command: 'CAPA'\r\n";
+    if((!@capabilities) && (!@auth_mechs)) {
+        sendcontrol "-ERR Unsupported command: 'CAPA'\r\n";
     }
     else {
-        push @data, "+OK List of capabilities follows\r\n";
-        push @data, "USER\r\n";
-        if($support_auth) {
-            push @data, "SASL UNKNOWN\r\n";
-        }
-        push @data, "IMPLEMENTATION POP3 pingpong test server\r\n";
-        push @data, ".\r\n";
-    }
+        my @data = ();
+        my $mechs;
 
-    for my $d (@data) {
-        sendcontrol $d;
+        # Calculate the CAPA response
+        push @data, "+OK List of capabilities follows\r\n";
+
+        for my $c (@capabilities) {
+            push @data, "$c\r\n";
+        }
+
+        for my $am (@auth_mechs) {
+            if(!$mechs) {
+                $mechs = "$am";
+            }
+            else {
+                $mechs .= " $am";
+            }
+        }
+
+        if($mechs) {
+            push @data, "SASL $mechs\r\n";
+        }
+
+        push @data, "IMPLEMENTATION POP3 pingpong test server\r\n";
+
+        # Send the CAPA response
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        # End with the magic 3-byte end of listing marker
+        sendcontrol ".\r\n";
     }
 
     return 0;
@@ -1213,19 +1245,27 @@ sub CAPA_pop3 {
 
 sub AUTH_pop3 {
     my ($testno) = @_;
-    my @data = ();
 
-    if(!$support_auth) {
-        push @data, "-ERR Unsupported command: 'AUTH'\r\n";
+    if(!@auth_mechs) {
+        sendcontrol "-ERR Unsupported command: 'AUTH'\r\n";
     }
     else {
-        push @data, "+OK List of supported mechanisms follows\r\n";
-        push @data, "UNKNOWN\r\n";
-        push @data, ".\r\n";
-    }
+        my @data = ();
 
-    for my $d (@data) {
-        sendcontrol $d;
+        # Calculate the AUTH response
+        push @data, "+OK List of supported mechanisms follows\r\n";
+
+        for my $am (@auth_mechs) {
+            push @data, "$am\r\n";
+        }
+
+        # Send the AUTH response
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        # End with the magic 3-byte end of listing marker
+        sendcontrol ".\r\n";
     }
 
     return 0;
@@ -1279,7 +1319,7 @@ sub LIST_pop3 {
     my @data = (
         "1 100\r\n",
         "2 4294967400\r\n",	# > 4 GB
-        "4 200\r\n", # Note that message 3 is a simulated "deleted" message
+        "3 200\r\n",
     );
 
     logmsg "retrieve a message list\n";
@@ -1301,7 +1341,7 @@ sub DELE_pop3 {
 
     logmsg "DELE_pop3 got $msg\n";
 
-    if ($msg eq "") {
+    if (!$msg) {
         sendcontrol "-ERR Protocol error\r\n";
     }
     else {
@@ -1314,13 +1354,94 @@ sub DELE_pop3 {
 sub STAT_pop3 {
     my ($args) = @_;
 
-    if ($args ne "") {
+    if ($args) {
         sendcontrol "-ERR Protocol error\r\n";
     }
     else {
         # Send statistics for the built-in fake message list as
         # detailed in the LIST_pop3 function above
         sendcontrol "+OK 3 4294967800\r\n";
+    }
+
+    return 0;
+}
+
+sub NOOP_pop3 {
+    my ($args) = @_;
+
+    if ($args) {
+        sendcontrol "-ERR Protocol error\r\n";
+    }
+    else {
+        sendcontrol "+OK\r\n";
+    }
+
+    return 0;
+}
+
+sub UIDL_pop3 {
+    # This is a built-in fake-message UID list
+    my @data = (
+        "1 1\r\n",
+        "2 2\r\n",
+        "3 4\r\n", # Note that UID 3 is a simulated "deleted" message
+    );
+
+    logmsg "retrieve a message UID list\n";
+
+    sendcontrol "+OK Listing starts\r\n";
+
+    for my $d (@data) {
+        sendcontrol $d;
+    }
+
+    # End with the magic 3-byte end of listing marker
+    sendcontrol ".\r\n";
+
+    return 0;
+}
+
+sub TOP_pop3 {
+    my ($args) = @_;
+    my ($msg, $lines) = split(/ /, $args, 2);
+
+    logmsg "TOP_pop3 got $args\n";
+
+    if (($msg eq "") || ($lines eq "")) {
+        sendcontrol "-ERR Protocol error\r\n";
+    }
+    else {
+        my @data;
+
+        if ($lines == "0") {
+            logmsg "retrieve header of mail\n";
+        }
+        else {
+            logmsg "retrieve top $lines lines of mail\n";
+        }
+
+        my $testno = $msg;
+        $testno =~ s/^([^0-9]*)//;
+        my $testpart = "";
+        if ($testno > 10000) {
+            $testpart = $testno % 10000;
+            $testno = int($testno / 10000);
+        }
+
+        loadtest("$srcdir/data/test$testno");
+
+        @data = getpart("reply", "data$testpart");
+
+        sendcontrol "+OK Mail transfer starts\r\n";
+
+        # Send mail content
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        # End with the magic 3-byte end of mail marker, assumes that the
+        # mail body ends with a CRLF!
+        sendcontrol ".\r\n";
     }
 
     return 0;
@@ -2112,8 +2233,8 @@ sub customize {
     $nodataconn425 = 0; # default is to not send 425 without data channel
     $nodataconn421 = 0; # default is to not send 421 without data channel
     $nodataconn150 = 0; # default is to not send 150 without data channel
-    $support_capa = 0;  # default is to not support capability command
-    $support_auth = 0;  # default is to not support authentication command
+    @capabilities = (); # default is to not support capability commands
+    @auth_mechs = ();   # default is to not support authentication commands
     %customreply = ();  #
     %customcount = ();  #
     %delayreply = ();   #
@@ -2178,13 +2299,13 @@ sub customize {
             logmsg "FTPD: instructed to use NODATACONN\n";
             $nodataconn=1;
         }
-        elsif($_ =~ /SUPPORTCAPA/) {
+        elsif($_ =~ /CAPA (.*)/) {
             logmsg "FTPD: instructed to support CAPABILITY command\n";
-            $support_capa=1;
+            @capabilities = split(/ /, $1);
         }
-        elsif($_ =~ /SUPPORTAUTH/) {
+        elsif($_ =~ /AUTH (.*)/) {
             logmsg "FTPD: instructed to support AUTHENTICATION command\n";
-            $support_auth=1;
+            @auth_mechs = split(/ /, $1);
         }
         elsif($_ =~ /NOSAVE/) {
             # don't actually store the file we upload - to be used when
