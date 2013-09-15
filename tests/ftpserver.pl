@@ -170,6 +170,12 @@ my $got_exit_signal = 0; # set if program should finish execution ASAP
 my $exit_signal;         # first signal handled in exit_signal_handler
 
 #**********************************************************************
+# Mail related definitions
+#
+my $TEXT_USERNAME = "user";
+my $TEXT_PASSWORD = "secret";
+
+#**********************************************************************
 # exit_signal_handler will be triggered to indicate that the program
 # should finish its execution in a controlled way as soon as possible.
 # For now, program will also terminate from within this handler.
@@ -561,15 +567,16 @@ sub protocolsetup {
             'DELE' => \&DELE_pop3,
             'LIST' => \&LIST_pop3,
             'NOOP' => \&NOOP_pop3,
+            'PASS' => \&PASS_pop3,
             'QUIT' => \&QUIT_pop3,
             'RETR' => \&RETR_pop3,
+            'RSET' => \&RSET_pop3,
             'STAT' => \&STAT_pop3,
             'TOP'  => \&TOP_pop3,
             'UIDL' => \&UIDL_pop3,
+            'USER' => \&USER_pop3,
         );
         %displaytext = (
-            'USER' => '+OK We are happy you popped in!',
-            'PASS' => '+OK Access granted',
             'welcome' => join("",
             '        _   _ ____  _     '."\r\n",
             '    ___| | | |  _ \| |    '."\r\n",
@@ -584,20 +591,26 @@ sub protocolsetup {
             'APPEND'     => \&APPEND_imap,
             'CAPABILITY' => \&CAPABILITY_imap,
             'CHECK'      => \&CHECK_imap,
+            'CLOSE'      => \&CLOSE_imap,
+            'COPY'       => \&COPY_imap,
             'CREATE'     => \&CREATE_imap,
             'DELETE'     => \&DELETE_imap,
             'EXAMINE'    => \&EXAMINE_imap,
+            'EXPUNGE'    => \&EXPUNGE_imap,
             'FETCH'      => \&FETCH_imap,
             'LIST'       => \&LIST_imap,
+            'LSUB'       => \&LSUB_imap,
+            'LOGIN'      => \&LOGIN_imap,
             'LOGOUT'     => \&LOGOUT_imap,
+            'NOOP'       => \&NOOP_imap,
             'RENAME'     => \&RENAME_imap,
             'SEARCH'     => \&SEARCH_imap,
             'SELECT'     => \&SELECT_imap,
             'STATUS'     => \&STATUS_imap,
-            'STORE'      => \&STORE_imap
+            'STORE'      => \&STORE_imap,
+            'UID'        => \&UID_imap,
         );
         %displaytext = (
-            'LOGIN'   => ' OK LOGIN completed',
             'welcome' => join("",
             '        _   _ ____  _     '."\r\n",
             '    ___| | | |  _ \| |    '."\r\n",
@@ -759,6 +772,9 @@ sub RCPT_smtp {
     $smtp_rcpt = $args;
 }
 
+# What was deleted by IMAP STORE / POP3 DELE commands
+my @deleted;
+
 ################
 ################ IMAP commands
 ################
@@ -802,6 +818,26 @@ sub CAPABILITY_imap {
         # Send the CAPABILITY response
         sendcontrol $data;
         sendcontrol "$cmdid OK CAPABILITY completed\r\n";
+    }
+
+    return 0;
+}
+
+sub LOGIN_imap {
+    my ($args) = @_;
+    my ($user, $password) = split(/ /, $args, 2);
+    fix_imap_params($user, $password);
+
+    logmsg "LOGIN_imap got $args\n";
+
+    if ($user eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    elsif (($user ne $TEXT_USERNAME) || ($password ne $TEXT_PASSWORD)) {
+        sendcontrol "$cmdid NO LOGIN failed\r\n";
+    }
+    else {
+        sendcontrol "$cmdid OK LOGIN completed\r\n";
     }
 
     return 0;
@@ -965,7 +1001,7 @@ sub APPEND_imap {
 
 sub STORE_imap {
     my ($args) = @_;
-    my ($uid, $what) = split(/ /, $args, 2);
+    my ($uid, $what, $value) = split(/ /, $args, 3);
     fix_imap_params($uid);
 
     logmsg "STORE_imap got $args\n";
@@ -973,11 +1009,15 @@ sub STORE_imap {
     if ($selected eq "") {
         sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
     }
-    elsif (($uid eq "") || ($what eq "")) {
+    elsif (($uid eq "") || ($what ne "+Flags") || ($value eq "")) {
         sendcontrol "$cmdid BAD Command Argument\r\n";
     }
     else {
-        sendcontrol "* $uid FETCH (FLAGS (\\Seen \\Deleted))\r\n";
+        if($value eq "\\Deleted") {
+            push(@deleted, $uid);
+        }
+
+        sendcontrol "* $uid FETCH (FLAGS (\\Seen $value))\r\n";
         sendcontrol "$cmdid OK STORE completed\r\n";
     }
 
@@ -1025,6 +1065,40 @@ sub LIST_imap {
         }
 
         sendcontrol "$cmdid OK LIST Completed\r\n";
+    }
+
+    return 0;
+}
+
+sub LSUB_imap {
+    my ($args) = @_;
+    my ($reference, $mailbox) = split(/ /, $args, 2);
+    fix_imap_params($reference, $mailbox);
+
+    logmsg "LSUB_imap got $args\n";
+
+    if ($reference eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        my $testno = $reference;
+
+        $testno =~ s/^([^0-9]*)//;
+        my $testpart = "";
+        if ($testno > 10000) {
+            $testpart = $testno % 10000;
+            $testno = int($testno / 10000);
+        }
+
+        loadtest("$srcdir/data/test$testno");
+
+        my @data = getpart("reply", "data$testpart");
+
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        sendcontrol "$cmdid OK LSUB Completed\r\n";
     }
 
     return 0;
@@ -1188,6 +1262,125 @@ sub CHECK_imap {
     return 0;
 }
 
+sub CLOSE_imap {
+    if ($selected eq "") {
+        sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
+    }
+    elsif (!@deleted) {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        sendcontrol "$cmdid OK CLOSE completed\r\n";
+
+        @deleted = ();
+    }
+
+    return 0;
+}
+
+sub EXPUNGE_imap {
+    if ($selected eq "") {
+        sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
+    }
+    else {
+        if (!@deleted) {
+            # Report the number of existing messages as per the SELECT
+            # command
+            sendcontrol "* 172 EXISTS\r\n";
+        }
+        else {
+            # Report the message UIDs being deleted
+            for my $d (@deleted) {
+                sendcontrol "* $d EXPUNGE\r\n";
+            }
+
+            @deleted = ();
+        }
+
+        sendcontrol "$cmdid OK EXPUNGE completed\r\n";
+    }
+
+    return 0;
+}
+
+sub COPY_imap {
+    my ($args) = @_;
+    my ($uid, $mailbox) = split(/ /, $args, 2);
+    fix_imap_params($uid, $mailbox);
+
+    logmsg "COPY_imap got $args\n";
+
+    if (($uid eq "") || ($mailbox eq "")) {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        sendcontrol "$cmdid OK COPY completed\r\n";
+    }
+
+    return 0;
+}
+
+sub UID_imap {
+    my ($args) = @_;
+    my ($command) = split(/ /, $args, 1);
+    fix_imap_params($command);
+
+    logmsg "UID_imap got $args\n";
+
+    if ($selected eq "") {
+        sendcontrol "$cmdid BAD Command received in Invalid state\r\n";
+    }
+    elsif (($command ne "COPY") && ($command ne "FETCH") &&
+           ($command ne "STORE") && ($command ne "SEARCH")) {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        my $testno = $selected;
+
+        $testno =~ s/^([^0-9]*)//;
+        my $testpart = "";
+        if ($testno > 10000) {
+            $testpart = $testno % 10000;
+            $testno = int($testno / 10000);
+        }
+
+        loadtest("$srcdir/data/test$testno");
+
+        my @data = getpart("reply", "data$testpart");
+
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        sendcontrol "$cmdid OK $command completed\r\n";
+    }
+
+    return 0;
+}
+
+sub NOOP_imap {
+    my ($args) = @_;
+    my @data = (
+        "* 22 EXPUNGE\r\n",
+        "* 23 EXISTS\r\n",
+        "* 3 RECENT\r\n",
+        "* 14 FETCH (FLAGS (\\Seen \\Deleted))\r\n",
+    );
+
+    if ($args) {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        sendcontrol "$cmdid OK NOOP completed\r\n";
+    }
+
+    return 0;
+}
+
 sub LOGOUT_imap {
     sendcontrol "* BYE cURL IMAP server signing off\r\n";
     sendcontrol "$cmdid OK LOGOUT completed\r\n";
@@ -1198,6 +1391,9 @@ sub LOGOUT_imap {
 ################
 ################ POP3 commands
 ################
+
+# Who is attempting to log in
+my $username;
 
 sub CAPA_pop3 {
     my ($testno) = @_;
@@ -1266,6 +1462,38 @@ sub AUTH_pop3 {
 
         # End with the magic 3-byte end of listing marker
         sendcontrol ".\r\n";
+    }
+
+    return 0;
+}
+
+sub USER_pop3 {
+    my ($user) = @_;
+
+    logmsg "USER_pop3 got $user\n";
+
+    if (!$user) {
+        sendcontrol "-ERR Protocol error\r\n";
+    }
+    else {
+        $username = $user;
+
+        sendcontrol "+OK\r\n";
+    }
+
+    return 0;
+}
+
+sub PASS_pop3 {
+    my ($password) = @_;
+
+    logmsg "PASS_pop3 got $password\n";
+
+    if (($username ne $TEXT_USERNAME) || ($password ne $TEXT_PASSWORD)) {
+        sendcontrol "-ERR Login failure\r\n";
+    }
+    else {
+        sendcontrol "+OK Login successful\r\n";
     }
 
     return 0;
@@ -1345,6 +1573,8 @@ sub DELE_pop3 {
         sendcontrol "-ERR Protocol error\r\n";
     }
     else {
+        push (@deleted, $msg);
+
         sendcontrol "+OK\r\n";
     }
 
@@ -1387,16 +1617,21 @@ sub UIDL_pop3 {
         "3 4\r\n", # Note that UID 3 is a simulated "deleted" message
     );
 
-    logmsg "retrieve a message UID list\n";
-
-    sendcontrol "+OK Listing starts\r\n";
-
-    for my $d (@data) {
-        sendcontrol $d;
+    if (!grep /^UIDL$/, @capabilities) {
+        sendcontrol "-ERR Unrecognized command\r\n";
     }
+    else {
+        logmsg "retrieve a message UID list\n";
 
-    # End with the magic 3-byte end of listing marker
-    sendcontrol ".\r\n";
+        sendcontrol "+OK Listing starts\r\n";
+
+        for my $d (@data) {
+            sendcontrol $d;
+        }
+
+        # End with the magic 3-byte end of listing marker
+        sendcontrol ".\r\n";
+    }
 
     return 0;
 }
@@ -1407,7 +1642,10 @@ sub TOP_pop3 {
 
     logmsg "TOP_pop3 got $args\n";
 
-    if (($msg eq "") || ($lines eq "")) {
+    if (!grep /^TOP$/, @capabilities) {
+        sendcontrol "-ERR Unrecognized command\r\n";
+    }
+    elsif (($msg eq "") || ($lines eq "")) {
         sendcontrol "-ERR Protocol error\r\n";
     }
     else {
@@ -1447,7 +1685,32 @@ sub TOP_pop3 {
     return 0;
 }
 
+sub RSET_pop3 {
+    my ($args) = @_;
+
+    if ($args) {
+        sendcontrol "-ERR Protocol error\r\n";
+    }
+    else {
+        if (@deleted) {
+            logmsg "resetting @deleted message(s)\n";
+
+            @deleted = ();
+        }
+
+        sendcontrol "+OK\r\n";
+    }
+
+    return 0;
+}
+
 sub QUIT_pop3 {
+    if(@deleted) {
+        logmsg "deleting @deleted message(s)\n";
+
+        @deleted = ();
+    }
+
     sendcontrol "+OK byebye\r\n";
 
     return 0;

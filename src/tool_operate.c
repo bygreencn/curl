@@ -1239,6 +1239,18 @@ int operate(struct Configurable *config, int argc, argv_item_t argv[])
           my_setopt(curl, CURLOPT_PROGRESSDATA, &progressbar);
         }
 
+        /* new in libcurl 7.24.0: */
+        if(config->dns_servers)
+          my_setopt_str(curl, CURLOPT_DNS_SERVERS, config->dns_servers);
+
+        /* new in libcurl 7.33.0: */
+        if(config->dns_interface)
+          my_setopt_str(curl, CURLOPT_DNS_INTERFACE, config->dns_interface);
+        if(config->dns_ipv4_addr)
+          my_setopt_str(curl, CURLOPT_DNS_LOCAL_IP4, config->dns_ipv4_addr);
+        if(config->dns_ipv6_addr)
+        my_setopt_str(curl, CURLOPT_DNS_LOCAL_IP6, config->dns_ipv6_addr);
+
         /* new in libcurl 7.6.2: */
         my_setopt_slist(curl, CURLOPT_TELNETOPTIONS, config->telnet_options);
 
@@ -1899,4 +1911,3 @@ int operate(struct Configurable *config, int argc, argv_item_t argv[])
 
   return res;
 }
-

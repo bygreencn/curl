@@ -891,6 +891,19 @@ Active Directory server.
 For more information about the individual components of a LDAP URL please
 see RFC4516.
 
+.B RTMP
+
+There's no official URL spec for RTMP so libcurl uses the URL syntax supported
+by the underlying librtmp library. It has a syntax where it wants a
+traditional URL, followed by a space and a series of space-separated
+name=value pairs.
+
+While space is not typically a "legal" letter, libcurl accepts them. When a
+user wants to pass in a '#' (hash) character it will be treated as a fragment
+and get cut off by libcurl if provided literally. You will instead have to
+escape it by providing it as backslash and its ASCII value in hexadecimal:
+"\\23".
+
 .B NOTES
 
 Starting with version 7.20.0, the fragment part of the URI will not be sent as
@@ -2298,6 +2311,36 @@ This option requires that libcurl was built with a resolver backend that
 supports this operation. The c-ares backend is the only such one.
 
 (Added in 7.24.0)
+.IP CURLOPT_DNS_INTERFACE
+Pass a char * as parameter. Set the name of the network interface that
+the DNS resolver should bind to. This must be an interface name (not an
+address). Set this option to NULL to use the default setting (don't
+bind to a specific interface).
+
+This option requires that libcurl was built with a resolver backend that
+supports this operation. The c-ares backend is the only such one.
+
+(Added in 7.33.0)
+.IP CURLOPT_DNS_LOCAL_IP4
+Set the local IPv4 address that the resolver should bind to. The argument
+should be of type char * and contain a single IPv4 address as a string.
+Set this option to NULL to use the default setting (don't
+bind to a specific IP address).
+
+This option requires that libcurl was built with a resolver backend that
+supports this operation. The c-ares backend is the only such one.
+
+(Added in 7.33.0)
+.IP CURLOPT_DNS_LOCAL_IP6
+Set the local IPv6 address that the resolver should bind to. The argument
+should be of type char * and contain a single IPv6 address as a string.
+Set this option to NULL to use the default setting (don't
+bind to a specific IP address).
+
+This option requires that libcurl was built with a resolver backend that
+supports this operation. The c-ares backend is the only such one.
+
+(Added in 7.33.0)
 .IP CURLOPT_ACCEPTTIMEOUT_MS
 Pass a long telling libcurl the maximum number of milliseconds to wait for a
 server to connect back to libcurl when an active FTP connection is used. If no
