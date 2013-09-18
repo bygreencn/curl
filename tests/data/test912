@@ -2,8 +2,7 @@
 <info>
 <keywords>
 SMTP
-SMTP HELO
-RFC821
+SIZE
 </keywords>
 </info>
 
@@ -11,7 +10,7 @@ RFC821
 # Server-side
 <reply>
 <servercmd>
-REPLY EHLO 500 Command unrecognized
+CAPA SIZE
 </servercmd>
 </reply>
 
@@ -22,16 +21,16 @@ REPLY EHLO 500 Command unrecognized
 smtp
 </server>
  <name>
-RFC821-only SMTP server (EHLO not supported)
+SMTP with SIZE support
  </name>
-<stdin>
+<file name="log/test912.eml">
 From: different
 To: another
 
 body
-</stdin>
+</file>
  <command>
-smtp://%HOSTIP:%SMTPPORT/user --mail-rcpt 902@foo --mail-from 902@from -T -
+smtp://%HOSTIP:%SMTPPORT/user --mail-rcpt 912@foo --mail-from 912@from -T log/test912.eml
 </command>
 </client>
 
@@ -40,9 +39,8 @@ smtp://%HOSTIP:%SMTPPORT/user --mail-rcpt 902@foo --mail-from 902@from -T -
 <verify>
 <protocol>
 EHLO user
-HELO user
-MAIL FROM:<902@from>
-RCPT TO:<902@foo>
+MAIL FROM:<912@from> SIZE=38
+RCPT TO:<912@foo>
 DATA
 QUIT
 </protocol>

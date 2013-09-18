@@ -623,13 +623,14 @@ sub protocolsetup {
     elsif($proto eq 'smtp') {
         %commandfunc = (
             'DATA' => \&DATA_smtp,
+            'EHLO' => \&EHLO_smtp,
+            'HELO' => \&HELO_smtp,
+            'MAIL' => \&MAIL_smtp,
             'RCPT' => \&RCPT_smtp,
+            'QUIT' => \&QUIT_smtp,
         );
         %displaytext = (
-            'EHLO' => "250-SIZE\r\n250 Welcome visitor, stay a while staaaaaay forever",
-            'MAIL' => '200 Note taken',
             'RCPT' => '200 Receivers accepted',
-            'QUIT' => '200 byebye',
             'welcome' => join("",
             '220-        _   _ ____  _     '."\r\n",
             '220-    ___| | | |  _ \| |    '."\r\n",
@@ -687,6 +688,110 @@ sub close_dataconn {
 
 # what set by "RCPT"
 my $smtp_rcpt;
+
+sub EHLO_smtp {
+    my ($client) = @_;
+    my @data;
+
+    # TODO: Get the IP address of the client connection to use in the EHLO
+    # response when the client doesn't specify one but for now use 127.0.0.1
+    if (!$client) {
+        $client = "[127.0.0.1]";
+    }
+
+    # Calculate the EHLO response
+    push @data, "ESMTP pingpong test server Hello $client";
+
+    if((@capabilities) || (@auth_mechs)) {
+        my $mechs;
+
+        for my $c (@capabilities) {
+            push @data, $c;
+        }
+
+        for my $am (@auth_mechs) {
+            if(!$mechs) {
+                $mechs = "$am";
+            }
+            else {
+                $mechs .= " $am";
+            }
+        }
+
+        if($mechs) {
+            push @data, "AUTH $mechs";
+        }
+    }
+
+    # Send the EHLO response
+    for (my $i = 0; $i < @data; $i++) {
+        my $d = $data[$i];
+
+        if($i < @data - 1) {
+            sendcontrol "250-$d\r\n";
+        }
+        else {
+            sendcontrol "250 $d\r\n";
+        }
+    }
+
+    return 0;
+}
+
+sub MAIL_smtp {
+    my ($args) = @_;
+
+    logmsg "MAIL_smtp got $args\n";
+
+    if (!$args) {
+        sendcontrol "501 Unrecognized parameter\r\n";
+    }
+    else {
+        my $from;
+        my $size;
+        my @elements = split(/ /, $args);
+
+        # Get the FROM and SIZE parameters
+        for my $e (@elements) {
+            if($e =~ /^FROM:(.*)$/) {
+                $from = $1;
+            }
+            elsif($e =~ /^SIZE=(\d+)$/) {
+                $size = $1;
+            }
+        }
+
+        # Validate the from address (only <> and a valid email address inside
+        # <> are allowed, such as <user@example.com>)
+        if ((!$from) || (($from ne "<>") && ($from !~
+            /^<([a-zA-Z][\w_.]+)\@([a-zA-Z0-9.-]+).([a-zA-Z]{2,4})>$/))) {
+            sendcontrol "501 Invalid address\r\n";
+        }
+        else {
+            my @found;
+            my $valid = 1;
+
+            # Check the capabilities for SIZE and if the specified size is
+            # greater than the message size then reject it
+            if (@found = grep /^SIZE (\d+)$/, @capabilities) {
+                if ($found[0] =~ /^SIZE (\d+)$/) {
+                    if ($size > $1) {
+                        valid = 0;
+                    }
+                }
+            }
+
+            if(!$valid) {
+                sendcontrol "552 Message size too large\r\n";
+            }
+            else {
+                sendcontrol "250 Sender OK\r\n";
+            }
+        }
+    }
+
+    return 0;
+}
 
 sub DATA_smtp {
     my $testno;
@@ -772,6 +877,26 @@ sub RCPT_smtp {
     $smtp_rcpt = $args;
 }
 
+sub HELO_smtp {
+    my ($client) = @_;
+
+    # TODO: Get the IP address of the client connection to use in the HELO
+    # response when the client doesn't specify one but for now use 127.0.0.1
+    if (!$client) {
+        $client = "[127.0.0.1]";
+    }
+
+    sendcontrol "250 SMTP pingpong test server Hello $client\r\n";
+
+    return 0;
+}
+
+sub QUIT_smtp {
+    sendcontrol "221 byebye\r\n";
+
+    return 0;
+}
+
 # What was deleted by IMAP STORE / POP3 DELE commands
 my @deleted;
 
@@ -844,22 +969,27 @@ sub LOGIN_imap {
 }
 
 sub SELECT_imap {
-    my ($testno) = @_;
-    fix_imap_params($testno);
+    my ($mailbox) = @_;
+    fix_imap_params($mailbox);
 
-    logmsg "SELECT_imap got test $testno\n";
+    logmsg "SELECT_imap got test $mailbox\n";
 
-    # Example from RFC 3501, 6.3.1. SELECT Command
-    sendcontrol "* 172 EXISTS\r\n";
-    sendcontrol "* 1 RECENT\r\n";
-    sendcontrol "* OK [UNSEEN 12] Message 12 is first unseen\r\n";
-    sendcontrol "* OK [UIDVALIDITY 3857529045] UIDs valid\r\n";
-    sendcontrol "* OK [UIDNEXT 4392] Predicted next UID\r\n";
-    sendcontrol "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n";
-    sendcontrol "* OK [PERMANENTFLAGS (\\Deleted \\Seen \\*)] Limited\r\n";
-    sendcontrol "$cmdid OK [READ-WRITE] SELECT completed\r\n";
+    if($mailbox eq "") {
+        sendcontrol "$cmdid BAD Command Argument\r\n";
+    }
+    else {
+        # Example from RFC 3501, 6.3.1. SELECT Command
+        sendcontrol "* 172 EXISTS\r\n";
+        sendcontrol "* 1 RECENT\r\n";
+        sendcontrol "* OK [UNSEEN 12] Message 12 is first unseen\r\n";
+        sendcontrol "* OK [UIDVALIDITY 3857529045] UIDs valid\r\n";
+        sendcontrol "* OK [UIDNEXT 4392] Predicted next UID\r\n";
+        sendcontrol "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n";
+        sendcontrol "* OK [PERMANENTFLAGS (\\Deleted \\Seen \\*)] Limited\r\n";
+        sendcontrol "$cmdid OK [READ-WRITE] SELECT completed\r\n";
 
-    $selected = $testno;
+        $selected = $mailbox;
+    }
 
     return 0;
 }
@@ -2564,7 +2694,10 @@ sub customize {
         }
         elsif($_ =~ /CAPA (.*)/) {
             logmsg "FTPD: instructed to support CAPABILITY command\n";
-            @capabilities = split(/ /, $1);
+            @capabilities = split(/ (?!(?:[^" ]|[^"] [^"])+")/, $1);
+            foreach (@capabilities) {
+                $_ = $1 if /^"(.*)"$/;
+            }
         }
         elsif($_ =~ /AUTH (.*)/) {
             logmsg "FTPD: instructed to support AUTHENTICATION command\n";
