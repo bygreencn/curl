@@ -764,7 +764,7 @@ sub MAIL_smtp {
         # Validate the from address (only <> and a valid email address inside
         # <> are allowed, such as <user@example.com>)
         if ((!$from) || (($from ne "<>") && ($from !~
-            /^<([a-zA-Z][\w_.]+)\@([a-zA-Z0-9.-]+).([a-zA-Z]{2,4})>$/))) {
+            /^<([a-zA-Z0-9._%+-]+)\@([a-zA-Z0-9.-]+).([a-zA-Z]{2,4})>$/))) {
             sendcontrol "501 Invalid address\r\n";
         }
         else {
@@ -776,7 +776,7 @@ sub MAIL_smtp {
             if (@found = grep /^SIZE (\d+)$/, @capabilities) {
                 if ($found[0] =~ /^SIZE (\d+)$/) {
                     if ($size > $1) {
-                        valid = 0;
+                        $valid = 0;
                     }
                 }
             }
@@ -1529,7 +1529,7 @@ sub CAPA_pop3 {
     my ($testno) = @_;
 
     if((!@capabilities) && (!@auth_mechs)) {
-        sendcontrol "-ERR Unsupported command: 'CAPA'\r\n";
+        sendcontrol "-ERR Unrecognized command\r\n";
     }
     else {
         my @data = ();
@@ -1573,7 +1573,7 @@ sub AUTH_pop3 {
     my ($testno) = @_;
 
     if(!@auth_mechs) {
-        sendcontrol "-ERR Unsupported command: 'AUTH'\r\n";
+        sendcontrol "-ERR Unrecognized command\r\n";
     }
     else {
         my @data = ();
@@ -1841,7 +1841,7 @@ sub QUIT_pop3 {
         @deleted = ();
     }
 
-    sendcontrol "+OK byebye\r\n";
+    sendcontrol "+OK cURL POP3 server signing off\r\n";
 
     return 0;
 }
