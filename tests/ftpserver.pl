@@ -630,7 +630,6 @@ sub protocolsetup {
             'QUIT' => \&QUIT_smtp,
         );
         %displaytext = (
-            'RCPT' => '200 Receivers accepted',
             'welcome' => join("",
             '220-        _   _ ____  _     '."\r\n",
             '220-    ___| | | |  _ \| |    '."\r\n",
@@ -689,6 +688,9 @@ sub close_dataconn {
 # what set by "RCPT"
 my $smtp_rcpt;
 
+# The type of server (SMTP or ESMTP)
+my $smtp_type;
+
 sub EHLO_smtp {
     my ($client) = @_;
     my @data;
@@ -699,8 +701,11 @@ sub EHLO_smtp {
         $client = "[127.0.0.1]";
     }
 
+    # Set the server type to ESMTP
+    $smtp_type = "ESMTP";
+
     # Calculate the EHLO response
-    push @data, "ESMTP pingpong test server Hello $client";
+    push @data, "$smtp_type pingpong test server Hello $client";
 
     if((@capabilities) || (@auth_mechs)) {
         my $mechs;
@@ -874,7 +879,13 @@ sub DATA_smtp {
 sub RCPT_smtp {
     my ($args) = @_;
 
+    logmsg "RCPT_smtp got $args\n";
+
     $smtp_rcpt = $args;
+
+    sendcontrol "200 Receivers accepted\r\n";
+
+    return 0;
 }
 
 sub HELO_smtp {
@@ -886,13 +897,17 @@ sub HELO_smtp {
         $client = "[127.0.0.1]";
     }
 
-    sendcontrol "250 SMTP pingpong test server Hello $client\r\n";
+    # Set the server type to SMTP
+    $smtp_type = "SMTP";
+
+    # Send the HELO response
+    sendcontrol "250 $smtp_type pingpong test server Hello $client\r\n";
 
     return 0;
 }
 
 sub QUIT_smtp {
-    sendcontrol "221 byebye\r\n";
+    sendcontrol "221 cURL $smtp_type server signing off\r\n";
 
     return 0;
 }
