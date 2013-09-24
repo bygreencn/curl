@@ -693,51 +693,97 @@ my $smtp_type;
 
 sub EHLO_smtp {
     my ($client) = @_;
-    my @data;
 
-    # TODO: Get the IP address of the client connection to use in the EHLO
-    # response when the client doesn't specify one but for now use 127.0.0.1
-    if (!$client) {
-        $client = "[127.0.0.1]";
-    }
+    if($client eq "verifiedserver") {
+        # This is the secret command that verifies that this actually is
+        # the curl test server
+        sendcontrol "554 WE ROOLZ: $$\r\n";
 
-    # Set the server type to ESMTP
-    $smtp_type = "ESMTP";
-
-    # Calculate the EHLO response
-    push @data, "$smtp_type pingpong test server Hello $client";
-
-    if((@capabilities) || (@auth_mechs)) {
-        my $mechs;
-
-        for my $c (@capabilities) {
-            push @data, $c;
+        if($verbose) {
+            print STDERR "FTPD: We returned proof we are the test server\n";
         }
 
-        for my $am (@auth_mechs) {
-            if(!$mechs) {
-                $mechs = "$am";
+        logmsg "return proof we are we\n";
+    }
+    else {
+        my @data;
+
+        # TODO: Get the IP address of the client connection to use in the
+        # EHLO response when the client doesn't specify one but for now use
+        # 127.0.0.1
+        if (!$client) {
+            $client = "[127.0.0.1]";
+        }
+
+        # Set the server type to ESMTP
+        $smtp_type = "ESMTP";
+
+        # Calculate the EHLO response
+        push @data, "$smtp_type pingpong test server Hello $client";
+
+        if((@capabilities) || (@auth_mechs)) {
+            my $mechs;
+
+            for my $c (@capabilities) {
+                push @data, $c;
+            }
+
+            for my $am (@auth_mechs) {
+                if(!$mechs) {
+                    $mechs = "$am";
+                }
+                else {
+                    $mechs .= " $am";
+                }
+            }
+
+            if($mechs) {
+                push @data, "AUTH $mechs";
+            }
+        }
+
+        # Send the EHLO response
+        for (my $i = 0; $i < @data; $i++) {
+            my $d = $data[$i];
+
+            if($i < @data - 1) {
+                sendcontrol "250-$d\r\n";
             }
             else {
-                $mechs .= " $am";
+                sendcontrol "250 $d\r\n";
             }
-        }
-
-        if($mechs) {
-            push @data, "AUTH $mechs";
         }
     }
 
-    # Send the EHLO response
-    for (my $i = 0; $i < @data; $i++) {
-        my $d = $data[$i];
+    return 0;
+}
 
-        if($i < @data - 1) {
-            sendcontrol "250-$d\r\n";
+sub HELO_smtp {
+    my ($client) = @_;
+
+    if($client eq "verifiedserver") {
+        # This is the secret command that verifies that this actually is
+        # the curl test server
+        sendcontrol "554 WE ROOLZ: $$\r\n";
+
+        if($verbose) {
+            print STDERR "FTPD: We returned proof we are the test server\n";
         }
-        else {
-            sendcontrol "250 $d\r\n";
+
+        logmsg "return proof we are we\n";
+    }
+    else {
+        # TODO: Get the IP address of the client connection to use in the HELO
+        # response when the client doesn't specify one but for now use 127.0.0.1
+        if (!$client) {
+            $client = "[127.0.0.1]";
         }
+
+        # Set the server type to SMTP
+        $smtp_type = "SMTP";
+
+        # Send the HELO response
+        sendcontrol "250 $smtp_type pingpong test server Hello $client\r\n";
     }
 
     return 0;
@@ -798,24 +844,37 @@ sub MAIL_smtp {
     return 0;
 }
 
+sub RCPT_smtp {
+    my ($args) = @_;
+
+    logmsg "RCPT_smtp got $args\n";
+
+    # Get the TO parameter
+    if($args !~ /^TO:(.*)/) {
+        sendcontrol "501 Unrecognized parameter\r\n";
+    }
+    else {
+        $smtp_rcpt = $1;
+
+        # Validate the to address (only a valid email address inside <> is
+        # allowed, such as <user@example.com>)
+        if ($smtp_rcpt !~
+            /^<([a-zA-Z0-9._%+-]+)\@([a-zA-Z0-9.-]+).([a-zA-Z]{2,4})>$/) {
+            sendcontrol "501 Invalid address\r\n";
+        }
+        else {
+            sendcontrol "250 Recipient OK\r\n";
+        }
+    }
+
+    return 0;
+}
+
 sub DATA_smtp {
-    my $testno;
+    my $testno = $smtp_rcpt;
 
-    if($smtp_rcpt =~ /^TO:(.*)/) {
-        $testno = $1;
-    }
-    else {
-        return; # failure
-    }
-
-    if($testno eq "<verifiedserver>") {
-        sendcontrol "554 WE ROOLZ: $$\r\n";
-        return 0; # don't wait for data now
-    }
-    else {
-        $testno =~ s/^([^0-9]*)([0-9]+).*/$2/;
-        sendcontrol "354 Show me the mail\r\n";
-    }
+    $testno =~ s/^([^0-9]*)([0-9]+).*/$2/;
+    sendcontrol "354 Show me the mail\r\n";
 
     logmsg "===> rcpt $testno was $smtp_rcpt\n";
 
@@ -874,36 +933,6 @@ sub DATA_smtp {
     sendcontrol "250 OK, data received!\r\n";
     logmsg "received $ulsize bytes upload\n";
 
-}
-
-sub RCPT_smtp {
-    my ($args) = @_;
-
-    logmsg "RCPT_smtp got $args\n";
-
-    $smtp_rcpt = $args;
-
-    sendcontrol "200 Receivers accepted\r\n";
-
-    return 0;
-}
-
-sub HELO_smtp {
-    my ($client) = @_;
-
-    # TODO: Get the IP address of the client connection to use in the HELO
-    # response when the client doesn't specify one but for now use 127.0.0.1
-    if (!$client) {
-        $client = "[127.0.0.1]";
-    }
-
-    # Set the server type to SMTP
-    $smtp_type = "SMTP";
-
-    # Send the HELO response
-    sendcontrol "250 $smtp_type pingpong test server Hello $client\r\n";
-
-    return 0;
 }
 
 sub QUIT_smtp {
