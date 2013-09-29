@@ -685,11 +685,11 @@ sub close_dataconn {
 ################ SMTP commands
 ################
 
-# what set by "RCPT"
-my $smtp_rcpt;
-
 # The type of server (SMTP or ESMTP)
 my $smtp_type;
+
+# The client (which normally contains the test number)
+my $smtp_client;
 
 sub EHLO_smtp {
     my ($client) = @_;
@@ -753,6 +753,9 @@ sub EHLO_smtp {
                 sendcontrol "250 $d\r\n";
             }
         }
+
+        # Store the client (as it may contain the test number)
+        $smtp_client = $client;
     }
 
     return 0;
@@ -784,6 +787,9 @@ sub HELO_smtp {
 
         # Send the HELO response
         sendcontrol "250 $smtp_type pingpong test server Hello $client\r\n";
+
+        # Store the client (as it may contain the test number)
+        $smtp_client = $client;
     }
 
     return 0;
@@ -854,11 +860,11 @@ sub RCPT_smtp {
         sendcontrol "501 Unrecognized parameter\r\n";
     }
     else {
-        $smtp_rcpt = $1;
+        my $to = $1;
 
         # Validate the to address (only a valid email address inside <> is
         # allowed, such as <user@example.com>)
-        if ($smtp_rcpt !~
+        if ($to !~
             /^<([a-zA-Z0-9._%+-]+)\@([a-zA-Z0-9.-]+).([a-zA-Z]{2,4})>$/) {
             sendcontrol "501 Invalid address\r\n";
         }
@@ -871,68 +877,81 @@ sub RCPT_smtp {
 }
 
 sub DATA_smtp {
-    my $testno = $smtp_rcpt;
+    my ($args) = @_;
 
-    $testno =~ s/^([^0-9]*)([0-9]+).*/$2/;
-    sendcontrol "354 Show me the mail\r\n";
+    if ($args) {
+        sendcontrol "501 Unrecognized parameter\r\n";
+    }
+    elsif ($smtp_client !~ /^(\d*)$/) {
+        sendcontrol "501 Invalid arguments\r\n";
+    }
+    else {
+        sendcontrol "354 Show me the mail\r\n";
 
-    logmsg "===> rcpt $testno was $smtp_rcpt\n";
+        my $testno = $smtp_client;
+        my $filename = "log/upload.$testno";
 
-    my $filename = "log/upload.$testno";
+        logmsg "Store test number $testno in $filename\n";
 
-    logmsg "Store test number $testno in $filename\n";
+        open(FILE, ">$filename") ||
+            return 0; # failed to open output
 
-    open(FILE, ">$filename") ||
-        return 0; # failed to open output
+        my $line;
+        my $ulsize=0;
+        my $disc=0;
+        my $raw;
+        while (5 == (sysread \*SFREAD, $line, 5)) {
+            if($line eq "DATA\n") {
+                my $i;
+                my $eob;
+                sysread \*SFREAD, $i, 5;
 
-    my $line;
-    my $ulsize=0;
-    my $disc=0;
-    my $raw;
-    while (5 == (sysread \*SFREAD, $line, 5)) {
-        if($line eq "DATA\n") {
-            my $i;
-            my $eob;
-            sysread \*SFREAD, $i, 5;
+                my $size = 0;
+                if($i =~ /^([0-9a-fA-F]{4})\n/) {
+                    $size = hex($1);
+                }
 
-            my $size = 0;
-            if($i =~ /^([0-9a-fA-F]{4})\n/) {
-                $size = hex($1);
+                read_mainsockf(\$line, $size);
+
+                $ulsize += $size;
+                print FILE $line if(!$nosave);
+
+                $raw .= $line;
+                if($raw =~ /\x0d\x0a\x2e\x0d\x0a/) {
+                    # end of data marker!
+                    $eob = 1;
+                }
+
+                logmsg "> Appending $size bytes to file\n";
+
+                if($eob) {
+                    logmsg "Found SMTP EOB marker\n";
+                    last;
+                }
             }
-
-            read_mainsockf(\$line, $size);
-
-            $ulsize += $size;
-            print FILE $line if(!$nosave);
-
-            $raw .= $line;
-            if($raw =~ /\x0d\x0a\x2e\x0d\x0a/) {
-                # end of data marker!
-                $eob = 1;
+            elsif($line eq "DISC\n") {
+                # disconnect!
+                $disc=1;
+                last;
             }
-            logmsg "> Appending $size bytes to file\n";
-            if($eob) {
-                logmsg "Found SMTP EOB marker\n";
+            else {
+                logmsg "No support for: $line";
                 last;
             }
         }
-        elsif($line eq "DISC\n") {
-            # disconnect!
-            $disc=1;
-            last;
-        }
-        else {
-            logmsg "No support for: $line";
-            last;
-        }
-    }
-    if($nosave) {
-        print FILE "$ulsize bytes would've been stored here\n";
-    }
-    close(FILE);
-    sendcontrol "250 OK, data received!\r\n";
-    logmsg "received $ulsize bytes upload\n";
 
+        if($nosave) {
+            print FILE "$ulsize bytes would've been stored here\n";
+        }
+
+        close(FILE);
+
+        logmsg "received $ulsize bytes upload\n";
+
+        sendcontrol "250 OK, data received!\r\n";
+    }
+
+    return 0;
 }
 
 sub QUIT_smtp {
@@ -1163,6 +1182,7 @@ sub APPEND_imap {
         if($nosave) {
             print FILE "$size bytes would've been stored here\n";
         }
+
         close(FILE);
 
         logmsg "received $size bytes upload\n";
