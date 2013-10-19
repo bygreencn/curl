@@ -1,8 +1,10 @@
 <testcase>
 <info>
 <keywords>
-SMTP
-SMTP AUTH NTLM
+POP3
+POP3 AUTH NTLM
+RFC1734
+RFC5034
 </keywords>
 </info>
 
@@ -11,23 +13,32 @@ SMTP AUTH NTLM
 <reply>
 <servercmd>
 AUTH NTLM
-REPLY AUTH 334 NTLM supported
-REPLY TlRMTVNTUAABAAAABoIIAAAAAAAAAAAAAAAAAAAAAAA= 334 TlRMTVNTUAACAAAAAgACADAAAAAGgoEAc51AYVDgyNcAAAAAAAAAAG4AbgAyAAAAQ0MCAAQAQwBDAAEAEgBFAEwASQBTAEEAQgBFAFQASAAEABgAYwBjAC4AaQBjAGUAZABlAHYALgBuAHUAAwAsAGUAbABpAHMAYQBiAGUAdABoAC4AYwBjAC4AaQBjAGUAZABlAHYALgBuAHUAAAAAAA
-REPLY TlRMTVNTUAADAAAAGAAYAEAAAAAYABgAWAAAAAAAAABwAAAACAAIAHAAAAAIAAgAeAAAAAAAAAAAAAAABoKBAFpkQwKRCZFMhjj0tw47wEjKHRHlvzfxQamFcheMuv8v+xeqphEO5V41xRd7R9deOXRlc3R1c2VyY3VybGhvc3Q= 235 Authenticated
+REPLY AUTH +
+REPLY TlRMTVNTUAABAAAABoIIAAAAAAAAAAAAAAAAAAAAAAA= + TlRMTVNTUAACAAAAAgACADAAAAAGgoEAc51AYVDgyNcAAAAAAAAAAG4AbgAyAAAAQ0MCAAQAQwBDAAEAEgBFAEwASQBTAEEAQgBFAFQASAAEABgAYwBjAC4AaQBjAGUAZABlAHYALgBuAHUAAwAsAGUAbABpAHMAYQBiAGUAdABoAC4AYwBjAC4AaQBjAGUAZABlAHYALgBuAHUAAAAAAA
+REPLY TlRMTVNTUAADAAAAGAAYAEAAAAAYABgAWAAAAAAAAABwAAAACAAIAHAAAAAIAAgAeAAAAAAAAAAAAAAABoKBAFpkQwKRCZFMhjj0tw47wEjKHRHlvzfxQamFcheMuv8v+xeqphEO5V41xRd7R9deOXRlc3R1c2VyY3VybGhvc3Q= +OK Login successful
 </servercmd>
+<data>
+From: me@somewhere
+To: fake@nowhere
+
+body
+
+--
+  yours sincerely
+</data>
 </reply>
 
 #
 # Client-side
 <client>
 <server>
-smtp
+pop3
 </server>
 <features>
 NTLM
 </features>
  <name>
-SMTP NTLM authentication
+POP3 NTLM authentication
  </name>
  <setenv>
 # we force our own host name, in order to make the test machine independent
@@ -35,11 +46,8 @@ CURL_GETHOSTNAME=curlhost
 # we try to use the LD_PRELOAD hack, if not a debug build
 LD_PRELOAD=%PWD/libtest/.libs/libhostname.so
  </setenv>
-<stdin>
-mail body
-</stdin>
  <command>
-smtp://%HOSTIP:%SMTPPORT/906 --mail-rcpt recipient@example.com --mail-from sender@example.com -u testuser:testpass -T -
+pop3://%HOSTIP:%POP3PORT/868 -u testuser:testpass
 </command>
 <precheck>
 chkhostname curlhost
@@ -50,18 +58,12 @@ chkhostname curlhost
 # Verify data after the test has been "shot"
 <verify>
 <protocol>
-EHLO 906
+CAPA
 AUTH NTLM
 TlRMTVNTUAABAAAABoIIAAAAAAAAAAAAAAAAAAAAAAA=
 TlRMTVNTUAADAAAAGAAYAEAAAAAYABgAWAAAAAAAAABwAAAACAAIAHAAAAAIAAgAeAAAAAAAAAAAAAAABoKBAFpkQwKRCZFMhjj0tw47wEjKHRHlvzfxQamFcheMuv8v+xeqphEO5V41xRd7R9deOXRlc3R1c2VyY3VybGhvc3Q=
-MAIL FROM:<sender@example.com>
-RCPT TO:<recipient@example.com>
-DATA
+RETR 868
 QUIT
 </protocol>
-<upload>
-mail body
-.
-</upload>
 </verify>
 </testcase>

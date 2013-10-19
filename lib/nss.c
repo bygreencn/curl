@@ -1244,8 +1244,9 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
   if(SSL_OptionSet(model, SSL_HANDSHAKE_AS_CLIENT, PR_TRUE) != SECSuccess)
     goto error;
 
-  /* do not use SSL cache if we are not going to verify peer */
-  ssl_no_cache = (data->set.ssl.verifypeer) ? PR_FALSE : PR_TRUE;
+  /* do not use SSL cache if disabled or we are not going to verify peer */
+  ssl_no_cache = (conn->ssl_config.sessionid && data->set.ssl.verifypeer) ?
+    PR_FALSE : PR_TRUE;
   if(SSL_OptionSet(model, SSL_NO_CACHE, ssl_no_cache) != SECSuccess)
     goto error;
 
@@ -1267,6 +1268,12 @@ CURLcode Curl_nss_connect(struct connectdata *conn, int sockindex)
   case CURL_SSLVERSION_SSLv3:
     ssl3 = PR_TRUE;
     break;
+  case CURL_SSLVERSION_TLSv1_0:
+  case CURL_SSLVERSION_TLSv1_1:
+  case CURL_SSLVERSION_TLSv1_2:
+    failf(data, "TLS minor version cannot be set\n");
+    curlerr = CURLE_SSL_CONNECT_ERROR;
+    goto error;
   }
 
   if(SSL_OptionSet(model, SSL_ENABLE_SSL2, ssl2) != SECSuccess)

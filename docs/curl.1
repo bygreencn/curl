@@ -173,14 +173,6 @@ Note that using --anyauth is not recommended if you do uploads from stdin,
 since it may require data to be sent twice and then the client must be able to
 rewind. If the need should arise when uploading from stdin, the upload
 operation will fail.
-.IP "--bearer"
-(IMAP/POP3/SMTP) Specify the Bearer Token for OAUTH 2.0 server authentication.
-The Bearer Token is used in conjuction with the user name which can be
-specified as part of the \fI--url\fP or \fI-u, --user\fP options.
-
-The Bearer Token and user name are formatted according to RFC 6750.
-
-If this option is used several times, the last one will be used.
 .IP "-b, --cookie <name=data>"
 (HTTP)
 Pass the data to the HTTP server as a cookie. It is supposedly the
@@ -298,7 +290,7 @@ If you start the data with the letter @, the rest should be a file name to
 read the data from, or - if you want curl to read the data from stdin.  The
 contents of the file must already be URL-encoded. Multiple files can also be
 specified. Posting data from a file named 'foobar' would thus be done with
-\fI--data\fP @filename. When --data is told to read from a file like that,
+\fI--data\fP @foobar. When --data is told to read from a file like that,
 carriage returns and newlines will be stripped out.
 .IP "-D, --dump-header <file>"
 Write the protocol headers to the specified file.
@@ -1062,6 +1054,14 @@ you want the file saved in a different directory, make sure you change current
 working directory before you invoke curl with the \fB-O, --remote-name\fP flag!
 
 You may use this option as many times as the number of URLs you have.
+.IP "--oauth2-bearer"
+(IMAP/POP3/SMTP) Specify the Bearer Token for OAUTH 2.0 server authentication.
+The Bearer Token is used in conjunction with the user name which can be
+specified as part of the \fI--url\fP or \fI-u, --user\fP options.
+
+The Bearer Token and user name are formatted according to RFC 6750.
+
+If this option is used several times, the last one will be used.
 .IP "-p, --proxytunnel"
 When an HTTP proxy is used (\fI-x, --proxy\fP), this option will cause non-HTTP
 protocols to attempt to tunnel through the proxy instead of merely using it to
@@ -1498,14 +1498,26 @@ Set TLS authentication type. Currently, the only supported option is "SRP",
 for TLS-SRP (RFC 5054). If \fI--tlsuser\fP and \fI--tlspassword\fP are
 specified but \fI--tlsauthtype\fP is not, then this option defaults to "SRP".
 (Added in 7.21.4)
-.IP "--tlsuser <user>"
-Set username for use with the TLS authentication method specified with
-\fI--tlsauthtype\fP. Requires that \fI--tlspassword\fP also be set.  (Added in
-7.21.4)
 .IP "--tlspassword <password>"
 Set password for use with the TLS authentication method specified with
 \fI--tlsauthtype\fP. Requires that \fI--tlsuser\fP also be set.  (Added in
 7.21.4)
+.IP "--tlsuser <user>"
+Set username for use with the TLS authentication method specified with
+\fI--tlsauthtype\fP. Requires that \fI--tlspassword\fP also be set.  (Added in
+7.21.4)
+.IP "--tlsv1.0"
+(SSL)
+Forces curl to use TLS version 1.0 when negotiating with a remote TLS server.
+(Added in 7.34.0)
+.IP "--tlsv1.1"
+(SSL)
+Forces curl to use TLS version 1.1 when negotiating with a remote TLS server.
+(Added in 7.34.0)
+.IP "--tlsv1.2"
+(SSL)
+Forces curl to use TLS version 1.2 when negotiating with a remote TLS server.
+(Added in 7.34.0)
 .IP "--tr-encoding"
 (HTTP) Request a compressed Transfer-Encoding response using one of the
 algorithms curl supports, and uncompress the data while receiving it.

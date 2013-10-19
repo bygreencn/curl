@@ -1056,6 +1056,18 @@ static CURLcode darwinssl_connect_step1(struct connectdata *conn,
         (void)SSLSetProtocolVersionMin(connssl->ssl_ctx, kTLSProtocol1);
         (void)SSLSetProtocolVersionMax(connssl->ssl_ctx, kTLSProtocol12);
         break;
+      case CURL_SSLVERSION_TLSv1_0:
+        (void)SSLSetProtocolVersionMin(connssl->ssl_ctx, kTLSProtocol1);
+        (void)SSLSetProtocolVersionMax(connssl->ssl_ctx, kTLSProtocol1);
+        break;
+      case CURL_SSLVERSION_TLSv1_1:
+        (void)SSLSetProtocolVersionMin(connssl->ssl_ctx, kTLSProtocol11);
+        (void)SSLSetProtocolVersionMax(connssl->ssl_ctx, kTLSProtocol11);
+        break;
+      case CURL_SSLVERSION_TLSv1_2:
+        (void)SSLSetProtocolVersionMin(connssl->ssl_ctx, kTLSProtocol12);
+        (void)SSLSetProtocolVersionMax(connssl->ssl_ctx, kTLSProtocol12);
+        break;
       case CURL_SSLVERSION_SSLv3:
         (void)SSLSetProtocolVersionMin(connssl->ssl_ctx, kSSLProtocol3);
         (void)SSLSetProtocolVersionMax(connssl->ssl_ctx, kSSLProtocol3);
@@ -1100,6 +1112,21 @@ static CURLcode darwinssl_connect_step1(struct connectdata *conn,
                                            kTLSProtocol12,
                                            true);
         break;
+      case CURL_SSLVERSION_TLSv1_0:
+        (void)SSLSetProtocolVersionEnabled(connssl->ssl_ctx,
+                                           kTLSProtocol1,
+                                           true);
+        break;
+      case CURL_SSLVERSION_TLSv1_1:
+        (void)SSLSetProtocolVersionEnabled(connssl->ssl_ctx,
+                                           kTLSProtocol11,
+                                           true);
+        break;
+      case CURL_SSLVERSION_TLSv1_2:
+        (void)SSLSetProtocolVersionEnabled(connssl->ssl_ctx,
+                                           kTLSProtocol12,
+                                           true);
+        break;
       case CURL_SSLVERSION_SSLv3:
         (void)SSLSetProtocolVersionEnabled(connssl->ssl_ctx,
                                            kSSLProtocol3,
@@ -1130,10 +1157,17 @@ static CURLcode darwinssl_connect_step1(struct connectdata *conn,
                                          true);
       break;
     case CURL_SSLVERSION_TLSv1:
+    case CURL_SSLVERSION_TLSv1_0:
       (void)SSLSetProtocolVersionEnabled(connssl->ssl_ctx,
                                          kTLSProtocol1,
                                          true);
       break;
+    case CURL_SSLVERSION_TLSv1_1:
+      failf(data, "Your version of the OS does not support TLSv1.1");
+      return CURLE_SSL_CONNECT_ERROR;
+    case CURL_SSLVERSION_TLSv1_2:
+      failf(data, "Your version of the OS does not support TLSv1.2");
+      return CURLE_SSL_CONNECT_ERROR;
     case CURL_SSLVERSION_SSLv2:
       err = SSLSetProtocolVersionEnabled(connssl->ssl_ctx,
                                          kSSLProtocol2,
@@ -1216,16 +1250,16 @@ static CURLcode darwinssl_connect_step1(struct connectdata *conn,
     }
     else {
       switch(err) {
-        case errSecPkcs12VerifyFailure: case errSecAuthFailed:
+        case errSecAuthFailed: case -25264: /* errSecPkcs12VerifyFailure */
           failf(data, "SSL: Incorrect password for the certificate \"%s\" "
                       "and its private key.", data->set.str[STRING_CERT]);
           break;
-        case errSecDecode: case errSecUnknownFormat:
+        case errSecDecode: case -25257: /* errSecUnknownFormat */
           failf(data, "SSL: Couldn't make sense of the data in the "
                       "certificate \"%s\" and its private key.",
                       data->set.str[STRING_CERT]);
           break;
-        case errSecPassphraseRequired:
+        case -25260: /* errSecPassphraseRequired */
           failf(data, "SSL The certificate \"%s\" requires a password.",
                       data->set.str[STRING_CERT]);
           break;
