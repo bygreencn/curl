@@ -2,7 +2,7 @@
 <info>
 <keywords>
 SMTP
-SMTP AUTH NTLM
+SMTP AUTH NTLM SASL-IR
 RFC4954
 </keywords>
 </info>
@@ -12,8 +12,7 @@ RFC4954
 <reply>
 <servercmd>
 AUTH NTLM
-REPLY AUTH 334 NTLM supported
-REPLY TlRMTVNTUAABAAAABoIIAAAAAAAAAAAAAAAAAAAAAAA= 334 TlRMTVNTUAACAAAAAgACADAAAAAGgoEAc51AYVDgyNcAAAAAAAAAAG4AbgAyAAAAQ0MCAAQAQwBDAAEAEgBFAEwASQBTAEEAQgBFAFQASAAEABgAYwBjAC4AaQBjAGUAZABlAHYALgBuAHUAAwAsAGUAbABpAHMAYQBiAGUAdABoAC4AYwBjAC4AaQBjAGUAZABlAHYALgBuAHUAAAAAAA==
+REPLY AUTH 334 TlRMTVNTUAACAAAAAgACADAAAAAGgoEAc51AYVDgyNcAAAAAAAAAAG4AbgAyAAAAQ0MCAAQAQwBDAAEAEgBFAEwASQBTAEEAQgBFAFQASAAEABgAYwBjAC4AaQBjAGUAZABlAHYALgBuAHUAAwAsAGUAbABpAHMAYQBiAGUAdABoAC4AYwBjAC4AaQBjAGUAZABlAHYALgBuAHUAAAAAAA==
 REPLY TlRMTVNTUAADAAAAGAAYAEAAAAAYABgAWAAAAAAAAABwAAAACAAIAHAAAAAIAAgAeAAAAAAAAAAAAAAABoKBAFpkQwKRCZFMhjj0tw47wEjKHRHlvzfxQamFcheMuv8v+xeqphEO5V41xRd7R9deOXRlc3R1c2VyY3VybGhvc3Q= 235 Authenticated
 </servercmd>
 </reply>
@@ -28,7 +27,7 @@ smtp
 NTLM
 </features>
  <name>
-SMTP NTLM authentication
+SMTP NTLM authentication with initial response
  </name>
  <setenv>
 # we force our own host name, in order to make the test machine independent
@@ -40,7 +39,7 @@ LD_PRELOAD=%PWD/libtest/.libs/libhostname.so
 mail body
 </stdin>
  <command>
-smtp://%HOSTIP:%SMTPPORT/906 --mail-rcpt recipient@example.com --mail-from sender@example.com -u testuser:testpass -T -
+smtp://%HOSTIP:%SMTPPORT/921 --mail-rcpt recipient@example.com --mail-from sender@example.com -u testuser:testpass --sasl-ir -T -
 </command>
 <precheck>
 chkhostname curlhost
@@ -51,9 +50,8 @@ chkhostname curlhost
 # Verify data after the test has been "shot"
 <verify>
 <protocol>
-EHLO 906
-AUTH NTLM
-TlRMTVNTUAABAAAABoIIAAAAAAAAAAAAAAAAAAAAAAA=
+EHLO 921
+AUTH NTLM TlRMTVNTUAABAAAABoIIAAAAAAAAAAAAAAAAAAAAAAA=
 TlRMTVNTUAADAAAAGAAYAEAAAAAYABgAWAAAAAAAAABwAAAACAAIAHAAAAAIAAgAeAAAAAAAAAAAAAAABoKBAFpkQwKRCZFMhjj0tw47wEjKHRHlvzfxQamFcheMuv8v+xeqphEO5V41xRd7R9deOXRlc3R1c2VyY3VybGhvc3Q=
 MAIL FROM:<sender@example.com>
 RCPT TO:<recipient@example.com>

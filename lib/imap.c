@@ -27,6 +27,7 @@
  * RFC4959 IMAP Extension for SASL Initial Client Response
  * RFC5092 IMAP URL Scheme
  * RFC6749 OAuth 2.0 Authorization Framework
+ * Draft   LOGIN SASL Mechanism <draft-murchison-sasl-login-00.txt>
  *
  ***************************************************************************/
 
@@ -372,6 +373,35 @@ static bool imap_endofresp(struct connectdata *conn, char *line, size_t len,
 
 /***********************************************************************
  *
+ * imap_get_message()
+ *
+ * Gets the authentication message from the response buffer.
+ */
+static void imap_get_message(char *buffer, char** outptr)
+{
+  size_t len = 0;
+  char* message = NULL;
+
+  /* Find the start of the message */
+  for(message = buffer + 2; *message == ' ' || *message == '\t'; message++)
+    ;
+
+  /* Find the end of the message */
+  for(len = strlen(message); len--;)
+    if(message[len] != '\r' && message[len] != '\n' && message[len] != ' ' &&
+        message[len] != '\t')
+      break;
+
+  /* Terminate the message */
+  if(++len) {
+    message[len] = '\0';
+  }
+
+  *outptr = message;
+}
+
+/***********************************************************************
+ *
  * state()
  *
  * This is the ONLY way to change IMAP state!
@@ -396,6 +426,7 @@ static void state(struct connectdata *conn, imapstate newstate)
     "AUTHENTICATE_NTLM",
     "AUTHENTICATE_NTLM_TYPE2MSG",
     "AUTHENTICATE_XOAUTH2",
+    "AUTHENTICATE_CANCEL",
     "AUTHENTICATE_FINAL",
     "LOGIN",
     "LIST",
@@ -976,19 +1007,16 @@ static CURLcode imap_state_auth_plain_resp(struct connectdata *conn,
     /* Create the authorisation message */
     result = Curl_sasl_create_plain_message(data, conn->user, conn->passwd,
                                             &plainauth, &len);
+    if(!result && plainauth) {
+      /* Send the message */
+      result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", plainauth);
 
-    /* Send the message */
-    if(!result) {
-      if(plainauth) {
-        result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", plainauth);
-
-        if(!result)
-          state(conn, IMAP_AUTHENTICATE_FINAL);
-      }
-
-      Curl_safefree(plainauth);
+      if(!result)
+        state(conn, IMAP_AUTHENTICATE_FINAL);
     }
   }
+
+  Curl_safefree(plainauth);
 
   return result;
 }
@@ -1013,19 +1041,16 @@ static CURLcode imap_state_auth_login_resp(struct connectdata *conn,
     /* Create the user message */
     result = Curl_sasl_create_login_message(data, conn->user,
                                             &authuser, &len);
+    if(!result && authuser) {
+      /* Send the user */
+      result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", authuser);
 
-    /* Send the user */
-    if(!result) {
-      if(authuser) {
-        result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", authuser);
-
-        if(!result)
-          state(conn, IMAP_AUTHENTICATE_LOGIN_PASSWD);
-      }
-
-      Curl_safefree(authuser);
+      if(!result)
+        state(conn, IMAP_AUTHENTICATE_LOGIN_PASSWD);
     }
   }
+
+  Curl_safefree(authuser);
 
   return result;
 }
@@ -1050,19 +1075,16 @@ static CURLcode imap_state_auth_login_password_resp(struct connectdata *conn,
     /* Create the password message */
     result = Curl_sasl_create_login_message(data, conn->passwd,
                                             &authpasswd, &len);
+    if(!result && authpasswd) {
+      /* Send the password */
+      result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", authpasswd);
 
-    /* Send the password */
-    if(!result) {
-      if(authpasswd) {
-        result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", authpasswd);
-
-        if(!result)
-          state(conn, IMAP_AUTHENTICATE_FINAL);
-      }
-
-      Curl_safefree(authpasswd);
+      if(!result)
+        state(conn, IMAP_AUTHENTICATE_FINAL);
     }
   }
+
+  Curl_safefree(authpasswd);
 
   return result;
 }
@@ -1075,9 +1097,10 @@ static CURLcode imap_state_auth_cram_resp(struct connectdata *conn,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  char *chlg64 = data->state.buffer;
-  size_t len = 0;
+  char *chlg = NULL;
+  char *chlg64 = NULL;
   char *rplyb64 = NULL;
+  size_t len = 0;
 
   (void)instate; /* no use for this yet */
 
@@ -1086,37 +1109,33 @@ static CURLcode imap_state_auth_cram_resp(struct connectdata *conn,
     return CURLE_LOGIN_DENIED;
   }
 
-  /* Get the challenge */
-  for(chlg64 += 2; *chlg64 == ' ' || *chlg64 == '\t'; chlg64++)
-    ;
+  /* Get the challenge message */
+  imap_get_message(data->state.buffer, &chlg64);
 
-  /* Terminate the challenge */
-  if(*chlg64 != '=') {
-    for(len = strlen(chlg64); len--;)
-      if(chlg64[len] != '\r' && chlg64[len] != '\n' && chlg64[len] != ' ' &&
-         chlg64[len] != '\t')
-        break;
+  /* Decode the challenge message */
+  result = Curl_sasl_decode_cram_md5_message(chlg64, &chlg, &len);
+  if(result) {
+    /* Send the cancellation */
+    result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", "*");
 
-    if(++len) {
-      chlg64[len] = '\0';
-    }
+    if(!result)
+      state(conn, IMAP_AUTHENTICATE_CANCEL);
   }
-
-  /* Create the response message */
-  result = Curl_sasl_create_cram_md5_message(data, chlg64, conn->user,
-                                             conn->passwd, &rplyb64, &len);
-
-  /* Send the response */
-  if(!result) {
-    if(rplyb64) {
+  else {
+    /* Create the response message */
+    result = Curl_sasl_create_cram_md5_message(data, chlg, conn->user,
+                                               conn->passwd, &rplyb64, &len);
+    if(!result && rplyb64) {
+      /* Send the response */
       result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", rplyb64);
 
       if(!result)
         state(conn, IMAP_AUTHENTICATE_FINAL);
     }
-
-    Curl_safefree(rplyb64);
   }
+
+  Curl_safefree(chlg);
+  Curl_safefree(rplyb64);
 
   return result;
 }
@@ -1128,9 +1147,13 @@ static CURLcode imap_state_auth_digest_resp(struct connectdata *conn,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  char *chlg64 = data->state.buffer;
-  size_t len = 0;
+  char *chlg64 = NULL;
   char *rplyb64 = NULL;
+  size_t len = 0;
+
+  char nonce[64];
+  char realm[128];
+  char algorithm[64];
 
   (void)instate; /* no use for this yet */
 
@@ -1139,26 +1162,35 @@ static CURLcode imap_state_auth_digest_resp(struct connectdata *conn,
     return CURLE_LOGIN_DENIED;
   }
 
-  /* Get the challenge */
-  for(chlg64 += 2; *chlg64 == ' ' || *chlg64 == '\t'; chlg64++)
-    ;
+  /* Get the challenge message */
+  imap_get_message(data->state.buffer, &chlg64);
 
-  /* Create the response message */
-  result = Curl_sasl_create_digest_md5_message(data, chlg64, conn->user,
-                                               conn->passwd, "imap",
-                                               &rplyb64, &len);
+  /* Decode the challange message */
+  result = Curl_sasl_decode_digest_md5_message(chlg64, nonce, sizeof(nonce),
+                                               realm, sizeof(realm),
+                                               algorithm, sizeof(algorithm));
+  if(result || strcmp(algorithm, "md5-sess") != 0) {
+    /* Send the cancellation */
+    result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", "*");
 
-  /* Send the response */
-  if(!result) {
-    if(rplyb64) {
+    if(!result)
+      state(conn, IMAP_AUTHENTICATE_CANCEL);
+  }
+  else {
+    /* Create the response message */
+    result = Curl_sasl_create_digest_md5_message(data, nonce, realm,
+                                                 conn->user, conn->passwd,
+                                                 "imap", &rplyb64, &len);
+    if(!result && rplyb64) {
+      /* Send the response */
       result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", rplyb64);
 
       if(!result)
         state(conn, IMAP_AUTHENTICATE_DIGESTMD5_RESP);
     }
-
-    Curl_safefree(rplyb64);
   }
+
+  Curl_safefree(rplyb64);
 
   return result;
 }
@@ -1211,19 +1243,16 @@ static CURLcode imap_state_auth_ntlm_resp(struct connectdata *conn,
     result = Curl_sasl_create_ntlm_type1_message(conn->user, conn->passwd,
                                                  &conn->ntlm,
                                                  &type1msg, &len);
+    if(!result && type1msg) {
+      /* Send the message */
+      result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", type1msg);
 
-    /* Send the message */
-    if(!result) {
-      if(type1msg) {
-        result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", type1msg);
-
-        if(!result)
-          state(conn, IMAP_AUTHENTICATE_NTLM_TYPE2MSG);
-      }
-
-      Curl_safefree(type1msg);
+      if(!result)
+        state(conn, IMAP_AUTHENTICATE_NTLM_TYPE2MSG);
     }
   }
+
+  Curl_safefree(type1msg);
 
   return result;
 }
@@ -1235,8 +1264,9 @@ static CURLcode imap_state_auth_ntlm_type2msg_resp(struct connectdata *conn,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  size_t len = 0;
+  char *type2msg = NULL;
   char *type3msg = NULL;
+  size_t len = 0;
 
   (void)instate; /* no use for this yet */
 
@@ -1245,31 +1275,40 @@ static CURLcode imap_state_auth_ntlm_type2msg_resp(struct connectdata *conn,
     result = CURLE_LOGIN_DENIED;
   }
   else {
-    /* Create the type-3 message */
-    result = Curl_sasl_create_ntlm_type3_message(data,
-                                                 data->state.buffer + 2,
-                                                 conn->user, conn->passwd,
-                                                 &conn->ntlm,
-                                                 &type3msg, &len);
+    /* Get the challenge message */
+    imap_get_message(data->state.buffer, &type2msg);
 
-    /* Send the message */
-    if(!result) {
-      if(type3msg) {
+    /* Decode the type-2 message */
+    result = Curl_sasl_decode_ntlm_type2_message(data, type2msg, &conn->ntlm);
+    if(result) {
+      /* Send the cancellation */
+      result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", "*");
+
+      if(!result)
+        state(conn, IMAP_AUTHENTICATE_CANCEL);
+    }
+    else {
+      /* Create the type-3 message */
+      result = Curl_sasl_create_ntlm_type3_message(data, conn->user,
+                                                   conn->passwd, &conn->ntlm,
+                                                   &type3msg, &len);
+      if(!result && type3msg) {
+        /* Send the message */
         result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", type3msg);
 
         if(!result)
           state(conn, IMAP_AUTHENTICATE_FINAL);
       }
-
-      Curl_safefree(type3msg);
     }
   }
+
+  Curl_safefree(type3msg);
 
   return result;
 }
 #endif
 
-/* For AUTH XOAUTH2 (without initial response) responses */
+/* For AUTHENTICATE XOAUTH2 (without initial response) responses */
 static CURLcode imap_state_auth_xoauth2_resp(struct connectdata *conn,
                                              int imapcode,
                                              imapstate instate)
@@ -1290,24 +1329,36 @@ static CURLcode imap_state_auth_xoauth2_resp(struct connectdata *conn,
     result = Curl_sasl_create_xoauth2_message(conn->data, conn->user,
                                               conn->xoauth2_bearer,
                                               &xoauth, &len);
+    if(!result && xoauth) {
+      /* Send the message */
+      result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", xoauth);
 
-    /* Send the message */
-    if(!result) {
-      if(xoauth) {
-        result = Curl_pp_sendf(&conn->proto.imapc.pp, "%s", xoauth);
-
-        if(!result)
-          state(conn, IMAP_AUTHENTICATE_FINAL);
-      }
-
-      Curl_safefree(xoauth);
+      if(!result)
+        state(conn, IMAP_AUTHENTICATE_FINAL);
     }
   }
+
+  Curl_safefree(xoauth);
 
   return result;
 }
 
-/* For final responses to the AUTHENTICATE sequence */
+/* For AUTHENTICATE cancellation responses */
+static CURLcode imap_state_auth_cancel_resp(struct connectdata *conn,
+                                            int imapcode,
+                                            imapstate instate)
+{
+  struct SessionHandle *data = conn->data;
+
+  (void)imapcode;
+  (void)instate; /* no use for this yet */
+
+  failf(data, "Authentication cancelled");
+
+  return CURLE_LOGIN_DENIED;
+}
+
+/* For final responses in the AUTHENTICATE sequence */
 static CURLcode imap_state_auth_final_resp(struct connectdata *conn,
                                            int imapcode,
                                            imapstate instate)
@@ -1658,6 +1709,10 @@ static CURLcode imap_statemach_act(struct connectdata *conn)
 
     case IMAP_AUTHENTICATE_XOAUTH2:
       result = imap_state_auth_xoauth2_resp(conn, imapcode, imapc->state);
+      break;
+
+    case IMAP_AUTHENTICATE_CANCEL:
+      result = imap_state_auth_cancel_resp(conn, imapcode, imapc->state);
       break;
 
     case IMAP_AUTHENTICATE_FINAL:

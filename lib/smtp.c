@@ -27,7 +27,8 @@
  * RFC4954 SMTP Authentication
  * RFC5321 SMTP protocol
  * RFC6749 OAuth 2.0 Authorization Framework
- * Draft   SMTP URL Interface
+ * Draft   SMTP URL Interface   <draft-earhart-url-smtp-00.txt>
+ * Draft   LOGIN SASL Mechanism <draft-murchison-sasl-login-00.txt>
  *
  ***************************************************************************/
 
@@ -218,7 +219,7 @@ static void smtp_to_smtps(struct connectdata *conn)
 
 /***********************************************************************
  *
- * pop3_endofresp()
+ * smtp_endofresp()
  *
  * Checks for an ending SMTP status code at the start of the given string, but
  * also detects various capabilities from the EHLO response including the
@@ -234,8 +235,11 @@ static bool smtp_endofresp(struct connectdata *conn, char *line, size_t len,
   if(len < 4 || !ISDIGIT(line[0]) || !ISDIGIT(line[1]) || !ISDIGIT(line[2]))
     return FALSE;       /* Nothing for us */
 
-  /* Do we have a command response? */
-  result = (line[3] == ' ') ? TRUE : FALSE;
+  /* Do we have a command response? This should be the response code followed
+     by a space and optionally some text as per RFC-5321 and as outlined in
+     Section 4. Examples of RFC-4954 but some e-mail servers ignore this and
+     only send the response code instead. */
+  result = (line[3] == ' ' || len == 5) ? TRUE : FALSE;
   if(result)
     *resp = curlx_sltosi(strtol(line, NULL, 10));
 
@@ -305,6 +309,35 @@ static bool smtp_endofresp(struct connectdata *conn, char *line, size_t len,
 
 /***********************************************************************
  *
+ * smtp_get_message()
+ *
+ * Gets the authentication message from the response buffer.
+ */
+static void smtp_get_message(char *buffer, char** outptr)
+{
+  size_t len = 0;
+  char* message = NULL;
+
+  /* Find the start of the message */
+  for(message = buffer + 4; *message == ' ' || *message == '\t'; message++)
+    ;
+
+  /* Find the end of the message */
+  for(len = strlen(message); len--;)
+    if(message[len] != '\r' && message[len] != '\n' && message[len] != ' ' &&
+        message[len] != '\t')
+      break;
+
+  /* Terminate the message */
+  if(++len) {
+    message[len] = '\0';
+  }
+
+  *outptr = message;
+}
+
+/***********************************************************************
+ *
  * state()
  *
  * This is the ONLY way to change SMTP state!
@@ -330,6 +363,7 @@ static void state(struct connectdata *conn, smtpstate newstate)
     "AUTH_NTLM",
     "AUTH_NTLM_TYPE2MSG",
     "AUTH_XOAUTH2",
+    "AUTH_CANCEL",
     "AUTH_FINAL",
     "MAIL",
     "RCPT",
@@ -811,19 +845,16 @@ static CURLcode smtp_state_auth_plain_resp(struct connectdata *conn,
     /* Create the authorisation message */
     result = Curl_sasl_create_plain_message(conn->data, conn->user,
                                             conn->passwd, &plainauth, &len);
+    if(!result && plainauth) {
+      /* Send the message */
+      result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", plainauth);
 
-    /* Send the message */
-    if(!result) {
-      if(plainauth) {
-        result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", plainauth);
-
-        if(!result)
-          state(conn, SMTP_AUTH_FINAL);
-      }
-
-      Curl_safefree(plainauth);
+      if(!result)
+        state(conn, SMTP_AUTH_FINAL);
     }
   }
+
+  Curl_safefree(plainauth);
 
   return result;
 }
@@ -848,19 +879,16 @@ static CURLcode smtp_state_auth_login_resp(struct connectdata *conn,
     /* Create the user message */
     result = Curl_sasl_create_login_message(conn->data, conn->user,
                                             &authuser, &len);
+    if(!result && authuser) {
+      /* Send the user */
+      result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", authuser);
 
-    /* Send the user */
-    if(!result) {
-      if(authuser) {
-        result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", authuser);
-
-        if(!result)
-          state(conn, SMTP_AUTH_LOGIN_PASSWD);
-      }
-
-      Curl_safefree(authuser);
+      if(!result)
+        state(conn, SMTP_AUTH_LOGIN_PASSWD);
     }
   }
+
+  Curl_safefree(authuser);
 
   return result;
 }
@@ -885,19 +913,16 @@ static CURLcode smtp_state_auth_login_password_resp(struct connectdata *conn,
     /* Create the password message */
     result = Curl_sasl_create_login_message(conn->data, conn->passwd,
                                             &authpasswd, &len);
+    if(!result && authpasswd) {
+      /* Send the password */
+      result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", authpasswd);
 
-    /* Send the password */
-    if(!result) {
-      if(authpasswd) {
-        result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", authpasswd);
-
-        if(!result)
-          state(conn, SMTP_AUTH_FINAL);
-      }
-
-      Curl_safefree(authpasswd);
+      if(!result)
+        state(conn, SMTP_AUTH_FINAL);
     }
   }
+
+  Curl_safefree(authpasswd);
 
   return result;
 }
@@ -910,9 +935,10 @@ static CURLcode smtp_state_auth_cram_resp(struct connectdata *conn,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  char *chlg64 = data->state.buffer;
-  size_t len = 0;
+  char *chlg = NULL;
+  char *chlg64 = NULL;
   char *rplyb64 = NULL;
+  size_t len = 0;
 
   (void)instate; /* no use for this yet */
 
@@ -921,37 +947,33 @@ static CURLcode smtp_state_auth_cram_resp(struct connectdata *conn,
     return CURLE_LOGIN_DENIED;
   }
 
-  /* Get the challenge */
-  for(chlg64 += 4; *chlg64 == ' ' || *chlg64 == '\t'; chlg64++)
-    ;
+  /* Get the challenge message */
+  smtp_get_message(data->state.buffer, &chlg64);
 
-  /* Terminate the challenge */
-  if(*chlg64 != '=') {
-    for(len = strlen(chlg64); len--;)
-      if(chlg64[len] != '\r' && chlg64[len] != '\n' && chlg64[len] != ' ' &&
-         chlg64[len] != '\t')
-        break;
+  /* Decode the challenge message */
+  result = Curl_sasl_decode_cram_md5_message(chlg64, &chlg, &len);
+  if(result) {
+    /* Send the cancellation */
+    result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", "*");
 
-    if(++len) {
-      chlg64[len] = '\0';
-    }
+    if(!result)
+      state(conn, SMTP_AUTH_CANCEL);
   }
-
-  /* Create the response message */
-  result = Curl_sasl_create_cram_md5_message(data, chlg64, conn->user,
-                                             conn->passwd, &rplyb64, &len);
-
-  /* Send the response */
-  if(!result) {
-    if(rplyb64) {
+  else {
+    /* Create the response message */
+    result = Curl_sasl_create_cram_md5_message(data, chlg, conn->user,
+                                               conn->passwd, &rplyb64, &len);
+    if(!result && rplyb64) {
+      /* Send the response */
       result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", rplyb64);
 
       if(!result)
         state(conn, SMTP_AUTH_FINAL);
     }
-
-    Curl_safefree(rplyb64);
   }
+
+  Curl_safefree(chlg);
+  Curl_safefree(rplyb64);
 
   return result;
 }
@@ -963,9 +985,13 @@ static CURLcode smtp_state_auth_digest_resp(struct connectdata *conn,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
-  char *chlg64 = data->state.buffer;
-  size_t len = 0;
+  char *chlg64 = NULL;
   char *rplyb64 = NULL;
+  size_t len = 0;
+
+  char nonce[64];
+  char realm[128];
+  char algorithm[64];
 
   (void)instate; /* no use for this yet */
 
@@ -974,26 +1000,35 @@ static CURLcode smtp_state_auth_digest_resp(struct connectdata *conn,
     return CURLE_LOGIN_DENIED;
   }
 
-  /* Get the challenge */
-  for(chlg64 += 4; *chlg64 == ' ' || *chlg64 == '\t'; chlg64++)
-    ;
+  /* Get the challenge message */
+  smtp_get_message(data->state.buffer, &chlg64);
 
-  /* Create the response message */
-  result = Curl_sasl_create_digest_md5_message(data, chlg64, conn->user,
-                                               conn->passwd, "smtp",
-                                               &rplyb64, &len);
+  /* Decode the challange message */
+  result = Curl_sasl_decode_digest_md5_message(chlg64, nonce, sizeof(nonce),
+                                               realm, sizeof(realm),
+                                               algorithm, sizeof(algorithm));
+  if(result || strcmp(algorithm, "md5-sess") != 0) {
+    /* Send the cancellation */
+    result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", "*");
 
-  /* Send the response */
-  if(!result) {
-    if(rplyb64) {
+    if(!result)
+      state(conn, SMTP_AUTH_CANCEL);
+  }
+  else {
+    /* Create the response message */
+    result = Curl_sasl_create_digest_md5_message(data, nonce, realm,
+                                                 conn->user, conn->passwd,
+                                                 "smtp", &rplyb64, &len);
+    if(!result && rplyb64) {
+      /* Send the response */
       result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", rplyb64);
 
       if(!result)
         state(conn, SMTP_AUTH_DIGESTMD5_RESP);
     }
-
-    Curl_safefree(rplyb64);
   }
+
+  Curl_safefree(rplyb64);
 
   return result;
 }
@@ -1047,19 +1082,16 @@ static CURLcode smtp_state_auth_ntlm_resp(struct connectdata *conn,
     result = Curl_sasl_create_ntlm_type1_message(conn->user, conn->passwd,
                                                  &conn->ntlm,
                                                  &type1msg, &len);
+    if(!result && type1msg) {
+      /* Send the message */
+      result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", type1msg);
 
-    /* Send the message */
-    if(!result) {
-      if(type1msg) {
-        result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", type1msg);
-
-        if(!result)
-          state(conn, SMTP_AUTH_NTLM_TYPE2MSG);
-      }
-
-      Curl_safefree(type1msg);
+      if(!result)
+        state(conn, SMTP_AUTH_NTLM_TYPE2MSG);
     }
   }
+
+  Curl_safefree(type1msg);
 
   return result;
 }
@@ -1071,6 +1103,7 @@ static CURLcode smtp_state_auth_ntlm_type2msg_resp(struct connectdata *conn,
 {
   CURLcode result = CURLE_OK;
   struct SessionHandle *data = conn->data;
+  char *type2msg = NULL;
   char *type3msg = NULL;
   size_t len = 0;
 
@@ -1081,25 +1114,34 @@ static CURLcode smtp_state_auth_ntlm_type2msg_resp(struct connectdata *conn,
     result = CURLE_LOGIN_DENIED;
   }
   else {
-    /* Create the type-3 message */
-    result = Curl_sasl_create_ntlm_type3_message(data,
-                                                 data->state.buffer + 4,
-                                                 conn->user, conn->passwd,
-                                                 &conn->ntlm,
-                                                 &type3msg, &len);
+    /* Get the type-2 message */
+    smtp_get_message(data->state.buffer, &type2msg);
 
-    /* Send the message */
-    if(!result) {
-      if(type3msg) {
+    /* Decode the type-2 message */
+    result = Curl_sasl_decode_ntlm_type2_message(data, type2msg, &conn->ntlm);
+    if(result) {
+      /* Send the cancellation */
+      result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", "*");
+
+      if(!result)
+        state(conn, SMTP_AUTH_CANCEL);
+    }
+    else {
+      /* Create the type-3 message */
+      result = Curl_sasl_create_ntlm_type3_message(data, conn->user,
+                                                   conn->passwd, &conn->ntlm,
+                                                   &type3msg, &len);
+      if(!result && type3msg) {
+        /* Send the message */
         result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", type3msg);
 
         if(!result)
           state(conn, SMTP_AUTH_FINAL);
       }
-
-      Curl_safefree(type3msg);
     }
   }
+
+  Curl_safefree(type3msg);
 
   return result;
 }
@@ -1125,24 +1167,36 @@ static CURLcode smtp_state_auth_xoauth2_resp(struct connectdata *conn,
     result = Curl_sasl_create_xoauth2_message(conn->data, conn->user,
                                               conn->xoauth2_bearer,
                                               &xoauth, &len);
+    if(!result && xoauth) {
+      /* Send the message */
+      result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", xoauth);
 
-    /* Send the message */
-    if(!result) {
-      if(xoauth) {
-        result = Curl_pp_sendf(&conn->proto.smtpc.pp, "%s", xoauth);
-
-        if(!result)
-          state(conn, SMTP_AUTH_FINAL);
-      }
-
-      Curl_safefree(xoauth);
+      if(!result)
+        state(conn, SMTP_AUTH_FINAL);
     }
   }
+
+  Curl_safefree(xoauth);
 
   return result;
 }
 
-/* For the final responses to the AUTH sequence */
+/* For AUTH cancellation responses */
+static CURLcode smtp_state_auth_cancel_resp(struct connectdata *conn,
+                                            int smtpcode,
+                                            smtpstate instate)
+{
+  struct SessionHandle *data = conn->data;
+
+  (void)smtpcode;
+  (void)instate; /* no use for this yet */
+
+  failf(data, "Authentication cancelled");
+
+  return CURLE_LOGIN_DENIED;
+}
+
+/* For final responses in the AUTH sequence */
 static CURLcode smtp_state_auth_final_resp(struct connectdata *conn,
                                            int smtpcode,
                                            smtpstate instate)
@@ -1352,6 +1406,10 @@ static CURLcode smtp_statemach_act(struct connectdata *conn)
 
     case SMTP_AUTH_XOAUTH2:
       result = smtp_state_auth_xoauth2_resp(conn, smtpcode, smtpc->state);
+      break;
+
+    case SMTP_AUTH_CANCEL:
+      result = smtp_state_auth_cancel_resp(conn, smtpcode, smtpc->state);
       break;
 
     case SMTP_AUTH_FINAL:

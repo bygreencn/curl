@@ -1926,7 +1926,8 @@ CURLcode Curl_setopt(struct SessionHandle *data, CURLoption option,
     data->set.ssl.fsslctxp = va_arg(param, void *);
     break;
 #endif
-#if defined(USE_SSLEAY) || defined(USE_QSOSSL) || defined(USE_GSKIT)
+#if defined(USE_SSLEAY) || defined(USE_QSOSSL) || defined(USE_GSKIT) || \
+    defined(USE_NSS)
   case CURLOPT_CERTINFO:
     data->set.ssl.certinfo = (0 != va_arg(param, long))?TRUE:FALSE;
     break;
@@ -3219,9 +3220,12 @@ static CURLcode ConnectionStore(struct SessionHandle *data,
    Note: this function's sub-functions call failf()
 
 */
-CURLcode Curl_connected_proxy(struct connectdata *conn)
+CURLcode Curl_connected_proxy(struct connectdata *conn,
+                              int sockindex)
 {
-  if(!conn->bits.proxy)
+  if(!conn->bits.proxy || sockindex)
+    /* this magic only works for the primary socket as the secondary is used
+       for FTP only and it has FTP specific magic in ftp.c */
     return CURLE_OK;
 
   switch(conn->proxytype) {
@@ -3257,7 +3261,6 @@ static CURLcode ConnectPlease(struct SessionHandle *data,
                               bool *connected)
 {
   CURLcode result;
-  Curl_addrinfo *addr;
 #ifndef CURL_DISABLE_VERBOSE_STRINGS
   char *hostname = conn->bits.proxy?conn->proxy.name:conn->host.name;
 
@@ -3273,15 +3276,10 @@ static CURLcode ConnectPlease(struct SessionHandle *data,
    *************************************************************/
   result= Curl_connecthost(conn,
                            conn->dns_entry,
-                           &conn->sock[FIRSTSOCKET],
-                           &addr,
                            connected);
   if(CURLE_OK == result) {
-    /* All is cool, we store the current information */
-    conn->ip_addr = addr;
-
     if(*connected) {
-      result = Curl_connected_proxy(conn);
+      result = Curl_connected_proxy(conn, FIRSTSOCKET);
       if(!result) {
         conn->bits.tcpconnect[FIRSTSOCKET] = TRUE;
         Curl_pgrsTime(data, TIMER_CONNECT); /* connect done */
@@ -5640,8 +5638,8 @@ CURLcode Curl_setup_conn(struct connectdata *conn,
       Curl_pgrsTime(data, TIMER_APPCONNECT); /* we're connected already */
       conn->bits.tcpconnect[FIRSTSOCKET] = TRUE;
       *protocol_done = TRUE;
-      Curl_verboseconnect(conn);
       Curl_updateconninfo(conn, conn->sock[FIRSTSOCKET]);
+      Curl_verboseconnect(conn);
     }
     /* Stop the loop now */
     break;

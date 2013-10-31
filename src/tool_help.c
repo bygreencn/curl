@@ -141,7 +141,7 @@ static const char *const helptext[] = {
   "     --no-sessionid  Disable SSL session-ID reusing (SSL)",
   "     --noproxy       List of hosts which do not use proxy",
   "     --ntlm          Use HTTP NTLM authentication (H)",
-  "     --oauth2-bearer BEARER XOAUTH2 Bearer Token (IMAP, POP3, SMTP)",
+  "     --oauth2-bearer TOKEN  OAuth 2 Bearer Token (IMAP, POP3, SMTP)",
   " -o, --output FILE   Write output to <file> instead of stdout",
   "     --pass PASS     Pass phrase for the private key (SSL/SSH)",
   "     --post301       "
@@ -215,7 +215,8 @@ static const char *const helptext[] = {
   " -T, --upload-file FILE  Transfer FILE to destination",
   "     --url URL       URL to work with",
   " -B, --use-ascii     Use ASCII/text transfer",
-  " -u, --user USER[:PASSWORD]  Server user and password",
+  " -u, --user USER[:PASSWORD][;OPTIONS]  Server user, password and login"
+  " options",
   "     --tlsuser USER  TLS username",
   "     --tlspassword STRING TLS password",
   "     --tlsauthtype STRING  TLS authentication type (default SRP)",

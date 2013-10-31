@@ -2,8 +2,9 @@
 <info>
 <keywords>
 SMTP
-SMTP AUTH LOGIN
+SMTP AUTH OAUTH2 SASL-IR
 RFC4954
+RFC6749
 </keywords>
 </info>
 
@@ -11,10 +12,8 @@ RFC4954
 # Server-side
 <reply>
 <servercmd>
-AUTH LOGIN
-REPLY AUTH 334 LOGIN supported
-REPLY dXNlcg== 334 UGFzc3dvcmQ6
-REPLY c2VjcmV0 235 Authenticated
+AUTH XOAUTH2
+REPLY AUTH 235 Authenticated
 </servercmd>
 </reply>
 
@@ -25,13 +24,13 @@ REPLY c2VjcmV0 235 Authenticated
 smtp
 </server>
  <name>
-SMTP login authentication
+SMTP OAUTH2 authentication with initial response
  </name>
 <stdin>
 mail body
 </stdin>
  <command>
-smtp://%HOSTIP:%SMTPPORT/904 --mail-rcpt recipient@example.com --mail-from sender@example.com -u user:secret -T -
+smtp://%HOSTIP:%SMTPPORT/922 --mail-rcpt recipient@example.com --mail-from sender@example.com -u user --oauth2-bearer mF_9.B5f-4.1JqM --sasl-ir -T -
 </command>
 </client>
 
@@ -39,10 +38,8 @@ smtp://%HOSTIP:%SMTPPORT/904 --mail-rcpt recipient@example.com --mail-from sende
 # Verify data after the test has been "shot"
 <verify>
 <protocol>
-EHLO 904
-AUTH LOGIN
-dXNlcg==
-c2VjcmV0
+EHLO 922
+AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIG1GXzkuQjVmLTQuMUpxTQEB
 MAIL FROM:<sender@example.com>
 RCPT TO:<recipient@example.com>
 DATA
