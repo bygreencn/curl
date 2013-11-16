@@ -1164,14 +1164,23 @@ user name to use for the transfer.
 authentication. You should not use this option together with the (older)
 CURLOPT_USERPWD option.
 
-In order to specify the password to be used in conjunction with the user name
-use the \fICURLOPT_PASSWORD\fP option.  (Added in 7.19.1)
+To specify the password and login options, along with the user name, use the
+\fICURLOPT_PASSWORD\fP and \fICURLOPT_OPTIONS\fP options or alternatively use
+the older \CURLOPT_USERPWD\fP option instead. (Added in 7.19.1)
 .IP CURLOPT_PASSWORD
 Pass a char * as parameter, which should be pointing to the zero terminated
 password to use for the transfer.
 
-The CURLOPT_PASSWORD option should be used in conjunction with
-the \fICURLOPT_USERNAME\fP option. (Added in 7.19.1)
+The CURLOPT_PASSWORD option should be used in conjunction with the
+\fICURLOPT_USERNAME\fP option. (Added in 7.19.1)
+.IP CURLOPT_OPTIONS
+Pass a char * as parameter, which should be pointing to the zero terminated
+options string to use for the transfer.
+
+\CURLOPT_OPTIONS\fP can be used to set protocol specific authentication options,
+such as the preferred authentication mechanism via "AUTH=NTLM" or "AUTH=*", and
+should be used in conjunction with the \fICURLOPT_USERNAME\fP option. (Added in
+7.34.0)
 .IP CURLOPT_PROXYUSERNAME
 Pass a char * as parameter, which should be pointing to the zero terminated
 user name to use for the transfer while connecting to Proxy.
@@ -1651,12 +1660,18 @@ SMTP mail request. The linked list should be a fully valid list of \fBstruct
 curl_slist\fP structs properly filled in. Use \fIcurl_slist_append(3)\fP to
 create the list and \fIcurl_slist_free_all(3)\fP to clean up an entire list.
 
-Each recipient should be specified within a pair of angled brackets (<>),
-however, should you not use an angled bracket as the first character libcurl
-will assume you provided a single email address and enclose that address
-within brackets for you.
+When performing a mail transfer, each recipient should be specified within a
+pair of angled brackets (<>), however, should you not use an angled bracket as
+the first character libcurl will assume you provided a single email address and
+enclose that address within brackets for you. (Added in 7.20.0)
 
-(Added in 7.20.0)
+When performing an address verification (VRFY command), each recipient should
+be specified as the user name or user name and domain (as per Section 3.5 of
+RFC5321). (Added in 7.34.0)
+
+When performing a mailing list expand (EXPN command), each recipient should be
+specified using the mailing list name, such as "Friends" or "London-Office".
+(Added in 7.34.0)
 .IP CURLOPT_MAIL_AUTH
 Pass a pointer to a zero terminated string as parameter. This will be used
 to specify the authentication address (identity) of a submitted message that
@@ -2028,35 +2043,32 @@ source file to the remote target file.
 Pass a curl_off_t as parameter. It contains the offset in number of bytes that
 you want the transfer to start from. (Added in 7.11.0)
 .IP CURLOPT_CUSTOMREQUEST
-Pass a pointer to a zero terminated string as parameter. It can be used to
-specify the request instead of GET or HEAD when performing HTTP based
-requests, instead of LIST and NLST when performing FTP directory listings and
-instead of LIST and RETR when issuing POP3 based commands. This is
-particularly useful, for example, for performing a HTTP DELETE request or a
-POP3 DELE command.
+Pass a pointer to a zero terminated string as parameter.
 
-Please don't perform this at will, on HTTP based requests, by making sure
-your server supports the command you are sending first.
- 
 When you change the request method by setting \fBCURLOPT_CUSTOMREQUEST\fP to
 something, you don't actually change how libcurl behaves or acts in regards
 to the particular request method, it will only change the actual string sent
 in the request.
 
+Restore to the internal default by setting this to NULL.
+
+This option can be used to specify the request:
+
+.B HTTP
+
+Instead of GET or HEAD when performing HTTP based requests. This is
+particularly useful, for example, for performing a HTTP DELETE request.
+
 For example:
 
-With the HTTP protocol when you tell libcurl to do a HEAD request, but then
-specify a GET though a custom request libcurl will still act as if it sent a
-HEAD. To switch to a proper HEAD use \fICURLOPT_NOBODY\fP, to switch to a
-proper POST use \fICURLOPT_POST\fP or \fICURLOPT_POSTFIELDS\fP and to switch
-to a proper GET use CURLOPT_HTTPGET.
+When you tell libcurl to do a HEAD request, but then specify a GET though a
+custom request libcurl will still act as if it sent a HEAD. To switch to a
+proper HEAD use \fICURLOPT_NOBODY\fP, to switch to a proper POST use
+\fICURLOPT_POST\fP or \fICURLOPT_POSTFIELDS\fP and to switch to a proper GET
+use CURLOPT_HTTPGET.
 
-With the POP3 protocol when you tell libcurl to use a custom request it will
-behave like a LIST or RETR command was sent where it expects data to be
-returned by the server. As such \fICURLOPT_NOBODY\fP should be used when
-specifying commands such as DELE and NOOP for example.
-
-Restore to the internal default by setting this to NULL.
+Please don't perform this at will, on HTTP based requests, by making sure
+your server supports the command you are sending first.
 
 Many people have wrongly used this option to replace the entire request with
 their own, including multiple headers and POST contents. While that might
@@ -2066,7 +2078,36 @@ could possibly confuse the remote server badly. Use \fICURLOPT_POST\fP and
 replace or extend the set of headers sent by libcurl. Use
 \fICURLOPT_HTTP_VERSION\fP to change HTTP version.
 
-(Support for POP3 added in 7.26.0)
+.B FTP
+
+Instead of LIST and NLST when performing FTP directory listings.
+
+.B IMAP
+
+Instead of LIST when issuing IMAP based commands. (Added in 7.30.0)
+
+.B POP3
+
+Instead of LIST and RETR when issuing POP3 based commands. (Added in 7.26.0)
+
+For example:
+
+When you tell libcurl to use a custom request it will behave like a LIST or
+RETR command was sent where it expects data to be returned by the server. As
+such \fICURLOPT_NOBODY\fP should be used when specifying commands such as
+DELE and NOOP for example.
+
+.B SMTP
+
+When you tell libcurl to use a custom request it will behave as a NOOP or VRFY
+request depending on what other options are set. (Added in 7.34.0)
+
+For example:
+
+If the \fICURLOPT_NOBODY\fP option is specified then the request can be used to
+specify the RSET command. Otherwise a multiline listing is returned which can
+be used to specify a HELP request or, if used in conjuection with the
+\fICURLOPT_MAIL_RCPT\fP option, a EXPN request.
 .IP CURLOPT_FILETIME
 Pass a long. If it is 1, libcurl will attempt to get the modification date of
 the remote document in this operation. This requires that the remote server
@@ -2366,7 +2407,7 @@ prefix, in order to avoid confusion with a nickname.
 Pass a pointer to a zero terminated string as parameter. The string should be
 the format of your certificate. Supported formats are "PEM" and "DER", except
 with Secure Transport. OpenSSL (versions 0.9.3 and later) and Secure Transport
-(on iOS 5 or later, or OS X 10.6 or later) also support "P12" for
+(on iOS 5 or later, or OS X 10.7 or later) also support "P12" for
 PKCS#12-encoded files. (Added in 7.9.3)
 .IP CURLOPT_SSLKEY
 Pass a pointer to a zero terminated string as parameter. The string should be
@@ -2532,9 +2573,10 @@ Curl considers the server the intended one when the Common Name field or a
 Subject Alternate Name field in the certificate matches the host name in the
 URL to which you told Curl to connect.
 
-When the value is 1, libcurl will return a failure. It was previously (in
-7.28.0 and earlier) a debug option of some sorts, but it is no longer
-supported due to frequently leading to programmer mistakes.
+When the value is 1, \fIcurl_easy_setopt\fP will return an error and the option
+value will not be changed.  It was previously (in 7.28.0 and earlier) a debug
+option of some sorts, but it is no longer supported due to frequently leading
+to programmer mistakes.
 
 When the value is 0, the connection succeeds regardless of the names in the
 certificate.
@@ -2544,9 +2586,8 @@ The default value for this option is 2.
 This option controls checking the server's certificate's claimed identity.
 The server could be lying.  To control lying, see
 \fICURLOPT_SSL_VERIFYPEER\fP.  If libcurl is built against NSS and
-\fICURLOPT_SSL_VERIFYPEER\fP is zero, \fICURLOPT_SSL_VERIFYHOST\fP
-is ignored.
-
+\fICURLOPT_SSL_VERIFYPEER\fP is zero, \fICURLOPT_SSL_VERIFYHOST\fP is also set
+to zero and cannot be overridden.
 .IP CURLOPT_CERTINFO
 Pass a long set to 1 to enable libcurl's certificate chain info gatherer. With
 this enabled, libcurl (if built with OpenSSL, NSS, GSKit or QsoSSL) will

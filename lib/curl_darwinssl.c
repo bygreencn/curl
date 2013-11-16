@@ -938,8 +938,10 @@ static OSStatus CopyIdentityFromPKCS12File(const char *cPath,
     cPassword, kCFStringEncodingUTF8) : NULL;
   CFDataRef pkcs_data = NULL;
 
-  /* We can import P12 files on iOS or OS X 10.6 or later: */
-#if CURL_BUILD_MAC_10_6 || CURL_BUILD_IOS
+  /* We can import P12 files on iOS or OS X 10.7 or later: */
+  /* These constants are documented as having first appeared in 10.6 but they
+     raise linker errors when used on that cat for some reason. */
+#if CURL_BUILD_MAC_10_7 || CURL_BUILD_IOS
   if(CFURLCreateDataAndPropertiesFromResource(NULL, pkcs_url, &pkcs_data,
     NULL, NULL, &status)) {
     const void *cKeys[] = {kSecImportExportPassphrase};
@@ -963,7 +965,7 @@ static OSStatus CopyIdentityFromPKCS12File(const char *cPath,
     CFRelease(options);
     CFRelease(pkcs_data);
   }
-#endif /* CURL_BUILD_MAC_10_6 || CURL_BUILD_IOS */
+#endif /* CURL_BUILD_MAC_10_7 || CURL_BUILD_IOS */
   if(password)
     CFRelease(password);
   CFRelease(pkcs_url);
@@ -1437,7 +1439,8 @@ static CURLcode darwinssl_connect_step1(struct connectdata *conn,
 #if CURL_BUILD_MAC_10_9 || CURL_BUILD_IOS_7
   /* We want to enable 1/n-1 when using a CBC cipher unless the user
      specifically doesn't want us doing that: */
-  SSLSetSessionOption(connssl->ssl_ctx, kSSLSessionOptionSendOneByteRecord,
+  if(SSLSetSessionOption != NULL)
+    SSLSetSessionOption(connssl->ssl_ctx, kSSLSessionOptionSendOneByteRecord,
                       !data->set.ssl_enable_beast);
 #endif /* CURL_BUILD_MAC_10_9 || CURL_BUILD_IOS_7 */
 

@@ -1,11 +1,9 @@
 <testcase>
 <info>
 <keywords>
-POP3
-POP3 AUTH CRAM-MD5
-RFC1734
-RFC2195
-RFC5034
+IMAP
+IMAP AUTH PLAIN SASL-IR
+RFC4616
 </keywords>
 </info>
 
@@ -13,9 +11,9 @@ RFC5034
 # Server-side
 <reply>
 <servercmd>
-AUTH CRAM-MD5
-REPLY AUTH + PDE5NzIuOTg3NjU0MzIxQGN1cmw+
-REPLY dXNlciA3MDMxNzI1NTk5ZmRiYjVkNDEyNjg5YWEzMjNlM2UwYg== +OK Login successful
+AUTH PLAIN
+CAPA SASL-IR
+REPLY AUTHENTICATE A002 OK AUTHENTICATE completed
 </servercmd>
 <data>
 From: me@somewhere
@@ -32,16 +30,13 @@ body
 # Client-side
 <client>
 <server>
-pop3
+imap
 </server>
-<features>
-crypto
-</features>
  <name>
-POP3 CRAM-MD5 authentication
+IMAP plain authentication with initial response
  </name>
  <command>
-pop3://%HOSTIP:%POP3PORT/867 -u user:secret
+'imap://%HOSTIP:%IMAPPORT/825/;UID=1' -u user:secret
 </command>
 </client>
 
@@ -49,11 +44,11 @@ pop3://%HOSTIP:%POP3PORT/867 -u user:secret
 # Verify data after the test has been "shot"
 <verify>
 <protocol>
-CAPA
-AUTH CRAM-MD5
-dXNlciA3MDMxNzI1NTk5ZmRiYjVkNDEyNjg5YWEzMjNlM2UwYg==
-RETR 867
-QUIT
+A001 CAPABILITY
+A002 AUTHENTICATE PLAIN dXNlcgB1c2VyAHNlY3JldA==
+A003 SELECT 825
+A004 FETCH 1 BODY[]
+A005 LOGOUT
 </protocol>
 </verify>
 </testcase>

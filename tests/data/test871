@@ -2,9 +2,9 @@
 <info>
 <keywords>
 POP3
-POP3 AUTH CRAM-MD5
+POP3 AUTH PLAIN SASL-IR
 RFC1734
-RFC2195
+RFC4616
 RFC5034
 </keywords>
 </info>
@@ -13,9 +13,8 @@ RFC5034
 # Server-side
 <reply>
 <servercmd>
-AUTH CRAM-MD5
-REPLY AUTH + PDE5NzIuOTg3NjU0MzIxQGN1cmw+
-REPLY dXNlciA3MDMxNzI1NTk5ZmRiYjVkNDEyNjg5YWEzMjNlM2UwYg== +OK Login successful
+AUTH PLAIN
+REPLY AUTH +OK Login successful
 </servercmd>
 <data>
 From: me@somewhere
@@ -34,14 +33,11 @@ body
 <server>
 pop3
 </server>
-<features>
-crypto
-</features>
  <name>
-POP3 CRAM-MD5 authentication
+POP3 plain authentication with initial response
  </name>
  <command>
-pop3://%HOSTIP:%POP3PORT/867 -u user:secret
+pop3://%HOSTIP:%POP3PORT/871 -u user:secret --sasl-ir
 </command>
 </client>
 
@@ -50,9 +46,8 @@ pop3://%HOSTIP:%POP3PORT/867 -u user:secret
 <verify>
 <protocol>
 CAPA
-AUTH CRAM-MD5
-dXNlciA3MDMxNzI1NTk5ZmRiYjVkNDEyNjg5YWEzMjNlM2UwYg==
-RETR 867
+AUTH PLAIN dXNlcgB1c2VyAHNlY3JldA==
+RETR 871
 QUIT
 </protocol>
 </verify>

@@ -758,10 +758,13 @@ CURLcode Curl_is_connected(struct connectdata *conn,
         /* use this socket from now on */
         conn->sock[sockindex] = conn->tempsock[i];
         conn->ip_addr = conn->tempaddr[i];
+        conn->tempsock[i] = CURL_SOCKET_BAD;
 
         /* close the other socket, if open */
-        if(conn->tempsock[other] != CURL_SOCKET_BAD)
+        if(conn->tempsock[other] != CURL_SOCKET_BAD) {
           Curl_closesocket(conn, conn->tempsock[other]);
+          conn->tempsock[other] = CURL_SOCKET_BAD;
+        }
 
         /* see if we need to do any proxy magic first once we connected */
         code = Curl_connected_proxy(conn, sockindex);
@@ -1024,6 +1027,8 @@ singleipconnect(struct connectdata *conn,
   conn->bits.ipv6 = (addr.family == AF_INET6)?TRUE:FALSE;
 #endif
 
+  *sockp = sockfd;
+
   if(-1 == rc) {
     switch (error) {
     case EINPROGRESS:
@@ -1037,7 +1042,6 @@ singleipconnect(struct connectdata *conn,
     case EAGAIN:
 #endif
 #endif
-      *sockp = sockfd;
       return CURLE_OK;
 
     default:
@@ -1050,8 +1054,6 @@ singleipconnect(struct connectdata *conn,
       return CURLE_COULDNT_CONNECT;
     }
   }
-  else
-    *sockp = sockfd;
 
   return CURLE_OK;
 }
