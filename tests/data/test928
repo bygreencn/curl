@@ -2,7 +2,7 @@
 <info>
 <keywords>
 SMTP
-VRFY
+HELP
 </keywords>
 </info>
 
@@ -10,7 +10,8 @@ VRFY
 # Server-side
 <reply>
 <data>
-252 Send some mail and I'll try my best
+214-This server supports the following commands:
+214 HELO EHLO RCPT DATA RSET MAIL VRFY EXPN QUIT HELP
 </data>
 </reply>
 
@@ -21,10 +22,10 @@ VRFY
 smtp
 </server>
  <name>
-SMTP external VRFY
+SMTP HELP
  </name>
  <command>
-smtp://%HOSTIP:%SMTPPORT/925 --mail-rcpt user@example.net
+smtp://%HOSTIP:%SMTPPORT/928
 </command>
 </client>
 
@@ -32,9 +33,7 @@ smtp://%HOSTIP:%SMTPPORT/925 --mail-rcpt user@example.net
 # Verify data after the test has been "shot"
 <verify>
 <protocol>
-EHLO 925
-VRFY user@example.net
+EHLO 928
+HELP
 QUIT
 </protocol>
-</verify>
-</testcase>

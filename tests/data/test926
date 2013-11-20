@@ -9,7 +9,9 @@ VRFY
 #
 # Server-side
 <reply>
-550 Unknown user
+<servercmd>
+REPLY VRFY 550 Unknown user
+</servercmd>
 </reply>
 
 #

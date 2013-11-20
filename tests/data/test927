@@ -2,7 +2,8 @@
 <info>
 <keywords>
 SMTP
-VRFY
+EXPN
+CUSTOMREQUEST
 </keywords>
 </info>
 
@@ -10,7 +11,9 @@ VRFY
 # Server-side
 <reply>
 <data>
-252 Send some mail and I'll try my best
+250-Joe Smith <joe.smith@example.com>
+250-Harry Smith <harry.smith@example.com>
+250 Melvin Smith <melvin.smith@example.com>
 </data>
 </reply>
 
@@ -21,10 +24,10 @@ VRFY
 smtp
 </server>
  <name>
-SMTP external VRFY
+SMTP mailing list EXPN (CUSTOMREQUEST)
  </name>
  <command>
-smtp://%HOSTIP:%SMTPPORT/925 --mail-rcpt user@example.net
+smtp://%HOSTIP:%SMTPPORT/927 --mail-rcpt Friends -X EXPN
 </command>
 </client>
 
@@ -32,8 +35,8 @@ smtp://%HOSTIP:%SMTPPORT/925 --mail-rcpt user@example.net
 # Verify data after the test has been "shot"
 <verify>
 <protocol>
-EHLO 925
-VRFY user@example.net
+EHLO 927
+EXPN Friends
 QUIT
 </protocol>
 </verify>

@@ -2,16 +2,14 @@
 <info>
 <keywords>
 SMTP
-VRFY
+NOOP
+CUSTOMREQUEST
 </keywords>
 </info>
 
 #
 # Server-side
 <reply>
-<data>
-252 Send some mail and I'll try my best
-</data>
 </reply>
 
 #
@@ -21,10 +19,10 @@ VRFY
 smtp
 </server>
  <name>
-SMTP external VRFY
+SMTP NOOP (CUSTOMREQUEST)
  </name>
  <command>
-smtp://%HOSTIP:%SMTPPORT/925 --mail-rcpt user@example.net
+smtp://%HOSTIP:%SMTPPORT/929 -X NOOP -I
 </command>
 </client>
 
@@ -32,9 +30,8 @@ smtp://%HOSTIP:%SMTPPORT/925 --mail-rcpt user@example.net
 # Verify data after the test has been "shot"
 <verify>
 <protocol>
-EHLO 925
-VRFY user@example.net
+EHLO 929
+NOOP
 QUIT
 </protocol>
 </verify>
-</testcase>
