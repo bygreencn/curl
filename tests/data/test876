@@ -2,14 +2,21 @@
 <info>
 <keywords>
 POP3
-LOGIN
-FAILURE
+POP3 AUTH CRAM-MD5
+RFC1734
+RFC2195
+RFC5034
 </keywords>
 </info>
 
 #
 # Server-side
 <reply>
+<servercmd>
+AUTH CRAM-MD5
+REPLY AUTH + Rubbish
+REPLY * -ERR AUTH exchange cancelled by client
+</servercmd>
 </reply>
 
 #
@@ -18,11 +25,14 @@ FAILURE
 <server>
 pop3
 </server>
+<features>
+crypto
+</features>
  <name>
-POP3 invalid login
+POP3 CRAM-MD5 graceful cancellation
  </name>
  <command>
-pop3://%HOSTIP:%POP3PORT/856 -u user:wrong
+pop3://%HOSTIP:%POP3PORT/876 -u user:secret
 </command>
 </client>
 
@@ -38,8 +48,8 @@ pop3://%HOSTIP:%POP3PORT/856 -u user:wrong
 # transfer and such a connection will not get a "QUIT"
 <protocol>
 CAPA
-USER user
-PASS wrong
+AUTH CRAM-MD5
+*
 </protocol>
 </verify>
 </testcase>
